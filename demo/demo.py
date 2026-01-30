@@ -11,13 +11,15 @@ sys.path.insert(0, osp.join('..', 'data'))
 from config import cfg
 import cv2
 
+# os.environ["PYOPENGL_PLATFORM"] = "egl"
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=str, dest='gpu_ids', default='0')
     parser.add_argument('--img_path', type=str, default='input.png')
     parser.add_argument('--output_folder', type=str, default='output')
     parser.add_argument('--encoder_setting', type=str, default='osx_l', choices=['osx_b', 'osx_l'])
-    parser.add_argument('--decoder_setting', type=str, default='normal', choices=['normal', 'wo_face_decoder', 'wo_decoder'])
+    parser.add_argument('--decoder_setting', type=str, default='normal', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l.pth.tar')
     args = parser.parse_args()
 
@@ -94,6 +96,8 @@ for num, indice in enumerate(indices):
     # render mesh
     focal = [cfg.focal[0] / cfg.input_body_shape[1] * bbox[2], cfg.focal[1] / cfg.input_body_shape[0] * bbox[3]]
     princpt = [cfg.princpt[0] / cfg.input_body_shape[1] * bbox[2] + bbox[0], cfg.princpt[1] / cfg.input_body_shape[0] * bbox[3] + bbox[1]]
+    
+
     vis_mesh = render_mesh(vis_mesh, mesh, smpl_x.face, {'focal': focal, 'princpt': princpt})
 
     #get_2d_pts
@@ -103,6 +107,14 @@ for num, indice in enumerate(indices):
     joint_proj = np.concatenate((joint_proj, np.ones_like(joint_proj[:, :1])), 1)
     joint_proj = np.dot(bb2img_trans, joint_proj.transpose(1, 0)).transpose(1, 0)
     vis_kpts = vis_keypoints(vis_kpts, joint_proj)
+
+    if num == 0:
+        print(np.__version__)
+        np.save("vis_nesh.npy", vis_mesh)
+        np.save("mesh.npy", mesh)
+        np.save("face.npy", smpl_x.face)
+        np.save("cam.npy", np.array([focal, princpt]))
+        break
 # save rendered image
 cv2.imwrite(os.path.join(args.output_folder, f'render.jpg'), vis_mesh[:, :, ::-1])
 cv2.imwrite(os.path.join(args.output_folder, f'kpts.jpg'), vis_kpts[:, :, ::-1])

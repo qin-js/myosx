@@ -225,6 +225,7 @@ class ViT(BaseBackbone):
             trunc_normal_(self.pos_embed, std=.02)
 
         self._freeze_stages()
+        
 
     def _freeze_stages(self):
         """Freeze parameters."""
@@ -301,11 +302,21 @@ class ViT(BaseBackbone):
 
         x = torch.cat((task_tokens, x), dim=1)
 
+        show_indexs = [3, 6, 9, 12, 15, 18, 21, 24]
+        i = 0
         for blk in self.blocks:
+            i += 1
             if self.use_checkpoint:
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
+                if i in show_indexs:
+                    
+                    xp = x[:, self.task_tokens_num:]  # [N,Hp*Wp,C]
+
+                    xp = xp.permute(0, 2, 1).reshape(B, -1, Hp, Wp).contiguous()
+                    print(i, ": ", xp.shape)
+                    torch.save(xp.detach().cpu(), f'features/f_{i}.pt')
 
         x = self.last_norm(x)
 

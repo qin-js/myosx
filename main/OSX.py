@@ -191,9 +191,11 @@ class Model(nn.Module):
     def forward(self, inputs, targets, meta_info, mode):
 
         body_img = F.interpolate(inputs['img'], cfg.input_body_shape)
+        print(body_img.shape)
 
         # 1. Encoder
         img_feat, task_tokens = self.encoder(body_img)  # task_token:[bs, N, c]
+        print(img_feat.shape)
         shape_token, cam_token, expr_token, jaw_pose_token, hand_token, body_pose_token = \
             task_tokens[:, 0], task_tokens[:, 1], task_tokens[:, 2], task_tokens[:, 3], task_tokens[:, 4:6], task_tokens[:, 6:]
 

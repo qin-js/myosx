@@ -1,6 +1,6 @@
-numpy
+numpy==1.23.5
 scikit-image
-scipy
+scipy==1.9.0
 scikit-learn
 smplx==0.1.28
 tqdm

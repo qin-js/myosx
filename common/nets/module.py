@@ -6,7 +6,8 @@ from common.utils.transforms import sample_joint_features, soft_argmax_2d, soft_
 from common.utils.human_models import smpl_x
 from config import cfg
 import math
-from mmcv.ops.roi_align import roi_align
+# from mmcv.ops.roi_align import roi_align
+from torchvision.ops import roi_align
 
 class PositionNet(nn.Module):
     def __init__(self, part, feat_dim=768):
@@ -195,7 +196,9 @@ class HandRoI(nn.Module):
             lhand_img_feat = roi_align(img_feat_i, lhand_bbox_roi,
                                                        (cfg.output_hand_hm_shape[1]*scale//2,
                                                         cfg.output_hand_hm_shape[2]*scale//2),
-                                                       1.0, 0, 'avg', False)
+                                                       1.0, 0, 
+                                                       # 'avg', #用torch替换，不需要该参数
+                                                       False)
             lhand_img_feat = torch.flip(lhand_img_feat, [3])  # flip to the right hand
 
             rhand_bbox_roi = rhand_bbox.clone()
@@ -206,7 +209,9 @@ class HandRoI(nn.Module):
             rhand_img_feat = roi_align(img_feat_i, rhand_bbox_roi,
                                                        (cfg.output_hand_hm_shape[1]*scale//2,
                                                         cfg.output_hand_hm_shape[2]*scale//2),
-                                                       1.0, 0, 'avg', False)
+                                                       1.0, 0, 
+                                                       # 'avg', #用torch替换，不需要该参数
+                                                       False)
             hand_img_feat = torch.cat((lhand_img_feat, rhand_img_feat))  # [bs, c, cfg.output_hand_hm_shape[2]*scale, cfg.output_hand_hm_shape[1]*scale]
             hand_img_feats.append(hand_img_feat)
         return hand_img_feats[::-1]   # high resolution -> low resolution
@@ -241,6 +246,8 @@ class FaceRoI(nn.Module):
             face_img_feat = roi_align(img_feat_i, face_bbox_roi,
                                                        (cfg.output_face_hm_shape[1]*scale//2,
                                                         cfg.output_face_hm_shape[2]*scale//2),
-                                                       1.0, 0, 'avg', False)
+                                                       1.0, 0, 
+                                                       # 'avg', #用torch替换，不需要该参数
+                                                       False)
             face_img_feats.append(face_img_feat)
         return face_img_feats[::-1]   # high resolution -> low resolution
