@@ -146,6 +146,22 @@ class PoseurDecoder(nn.Module):
         super().__init__()
         
         self.d_model = embed_dim
+         # [修复 1] 保存 num_levels，否则 forward 中的 repeat 会报错
+        self.num_levels = len(in_channels_list) 
+        # [修复 2] 保存 flag
+        self.use_internal_backbone = use_internal_backbone 
+
+        self.use_internal_backbone = use_internal_backbone
+        
+        if self.use_internal_backbone:
+            # 初始化 ResNet50 (用于 Decoder 内部提取特征)
+            print("Initializing Internal ResNet50 for Decoder...")
+            m = resnet50(pretrained=True)
+            self.backbone = nn.ModuleDict({
+                'conv1': m.conv1, 'bn1': m.bn1, 'relu': m.relu, 'maxpool': m.maxpool,
+                'layer1': m.layer1, 'layer2': m.layer2, 'layer3': m.layer3, 'layer4': m.layer4
+            })
+
         # 直接使用 Transformer Layers
         self.layers = nn.ModuleList([
             DeformableTransformerDecoderLayer(embed_dim, ffn_dim, 0.1, num_heads, len(in_channels_list), num_points)
@@ -313,13 +329,15 @@ class StandardViT(nn.Module):
     def __init__(self, img_size=(256, 192), patch_size=16, embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4, qkv_bias=True):
         super().__init__()
         self.embed_dim = embed_dim
-        # 修改点：使用 PatchEmbed 类
         self.patch_embed = PatchEmbed(img_size, patch_size, 3, embed_dim)
         
-        # self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.num_task_token = 24 
+        # 设定任务 Token 数量
+        self.num_task_token = 31 
         self.task_tokens = nn.Parameter(torch.zeros(1, self.num_task_token, embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches + 1, embed_dim))
+        
+        # [核心修正] pos_embed 长度必须等于: patch数量 + task_token数量
+        # 192 + 24 = 216
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches + self.num_task_token, embed_dim))
         
         self.blocks = nn.ModuleList([
             Block(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias)
@@ -342,21 +360,30 @@ class StandardViT(nn.Module):
 
     def forward(self, x):
         B = x.shape[0]
-        x = self.patch_embed(x)
-        # cls_tokens = self.cls_token.expand(B, -1, -1)
-        cls_tokens = self.task_tokens.expand(B, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-        x = x + self.pos_embed
+        x = self.patch_embed(x) # [B, 192, 1024]
+        
+        cls_tokens = self.task_tokens.expand(B, -1, -1) # [B, 24, 1024]
+        x = torch.cat((cls_tokens, x), dim=1) # [B, 216, 1024]
+        
+        # [此时 x 和 pos_embed 都是 216，不再报错]
+        x = x + self.pos_embed 
         
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)
 
-        # 修改 4: 只需要 Feature Map，丢弃 Token
-        # (假设我们只需要特征图)
-        x = x[:, self.num_task_token:, :] 
+        # [核心修复] 拆分 Task Tokens 和 Image Features
+        # task_tokens: [B, 31, 1024]
+        task_token_out = x[:, :self.num_task_token, :]
         
-        return x[:, 1:, :].transpose(1, 2).reshape(B, self.embed_dim, *self.grid_size)
+        # img_features: [B, 192, 1024]
+        img_feat_out = x[:, self.num_task_token:, :]
+        
+        # Reshape Image Features: [B, 1024, H, W]
+        img_feat_out = img_feat_out.transpose(1, 2).reshape(B, self.embed_dim, *self.grid_size)
+        
+        # 返回两个值
+        return img_feat_out, task_token_out
 
 class ViTWrapper:
     def __init__(self, backbone): self.backbone = backbone
@@ -794,7 +821,7 @@ def get_model(mode):
         num_heads=8, 
         num_layers=6, 
         num_queries=20,
-        use_internal_backbone=True # <--- 开启这个
+        use_internal_backbone=False # <--- 开启这个
     )
 
     # 3. Face
@@ -809,7 +836,7 @@ def get_model(mode):
         num_heads=8, 
         num_layers=6, 
         num_queries=72,
-        use_internal_backbone=True # <--- 开启这个
+        use_internal_backbone=False # <--- 开启这个
     )
 
     # 4. Initialization
