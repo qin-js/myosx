@@ -8,6 +8,7 @@ from common.timer import Timer
 from common.logger import colorlogger
 from torch.nn.parallel.data_parallel import DataParallel
 from config import cfg
+from collections import OrderedDict
 if cfg.decoder_setting == 'normal':
     print("normal mode")
     from OSX import get_model
@@ -230,98 +231,96 @@ class Demoer(Base):
 
         # 假设 model 已经是你用 get_model() 获取到的纯 PyTorch 模型
         model = get_model('test')
-        # model = model.cuda() # 建议先不上 DataParallel，调试通了再加
+        model = model.cuda()
 
+         # 智能权重加载器 (Smart Adapter)
+        # ==============================================================================
         print(f"Loading checkpoint from {cfg.pretrained_model_path} ...")
         ckpt = torch.load(cfg.pretrained_model_path, map_location='cpu')
-
-        # 1. 获取原始 state_dict
-        if 'network' in ckpt:
-            src_state_dict = ckpt['network']
-        elif 'state_dict' in ckpt:
-            src_state_dict = ckpt['state_dict']
-        else:
-            src_state_dict = ckpt
-
-        from collections import OrderedDict
+        
+        if 'network' in ckpt: src_state_dict = ckpt['network']
+        elif 'state_dict' in ckpt: src_state_dict = ckpt['state_dict']
+        else: src_state_dict = ckpt
+        
         new_state_dict = OrderedDict()
-        model_keys = list(model.state_dict().keys())
-
+        
         for k, v in src_state_dict.items():
-            # 1. 基础清理
-            if k.startswith('module.'):
-                k = k[7:]
+            if k.startswith('module.'): k = k[7:]
             
-            # 2. Encoder 映射 (保持之前的逻辑)
-            if k.startswith('encoder.') or k.startswith('backbone.'):
-                # 处理 task_tokens -> cls_token 的映射 (如果此时你想强行加载)
-                if 'task_tokens' in k:
-                    k = k.replace('task_tokens', 'cls_token') # 形状可能不匹配，如果报错就忽略这个key
+            # ----------------------------------------------------------------------
+            # 1. Encoder (ViT) 
+            # ----------------------------------------------------------------------
+            if k.startswith('backbone.') or k.startswith('encoder.'):
+                new_k = k.replace('backbone.', 'encoder.')
                 
-                # 确保前缀是 encoder. (匹配 model.encoder)
-                k = k.replace('backbone.', 'encoder.')
+                # 处理 pos_embed 形状扩展 (193 -> 223)
+                if 'pos_embed' in new_k:
+                    if v.shape[1] == 193 and model.encoder.pos_embed.shape[1] == 223:
+                        # print(f"Adapting pos_embed {v.shape} -> {model.encoder.pos_embed.shape}")
+                        cls_pos = v[:, 0:1, :]
+                        patch_pos = v[:, 1:, :]
+                        task_pos = cls_pos.repeat(1, 31, 1) # 复制 31 份
+                        v = torch.cat([task_pos, patch_pos], dim=1)
+                
+                # 务必保存修改后的 Key
+                new_state_dict[new_k] = v
+                continue # 结束当前循环，处理下一个 Key
 
-            # 3. Regressor 映射 (保持之前的逻辑)
+            # ----------------------------------------------------------------------
+            # 2. Regressor 头
+            # ----------------------------------------------------------------------
             k = k.replace('body_rotation_net', 'body_regressor')
             k = k.replace('hand_rotation_net', 'hand_regressor')
-
-            # 4. === 核心：Decoder Attention 映射 ===
-            # 原 Key: hand_decoder.keypoint_head.transformer.decoder.layers.0.attentions.1.sampling_offsets.weight
-            # 新 Key: hand_decoder.layers.0.cross_attn.sampling_offsets.weight
             
-            if 'decoder' in k and 'attentions' in k:
-                # 去掉中间冗余路径
+            # ----------------------------------------------------------------------
+            # 3. Decoder (Hand/Face) - MMCV 到 PyTorch 的复杂映射
+            # ----------------------------------------------------------------------
+            if 'transformer.decoder.' in k:
+                # 3.1 去掉前缀
                 k = k.replace('keypoint_head.transformer.decoder.', '')
                 
-                # 映射 attentions.1 -> cross_attn
-                if 'attentions.1' in k:
-                    k = k.replace('attentions.1', 'cross_attn')
-                # 映射 attentions.0 -> self_attn
-                elif 'attentions.0' in k:
+                # 3.2 映射 Norm 层 (MMCV: norms.0 -> PyTorch: norm1)
+                k = k.replace('norms.0', 'norm1')
+                k = k.replace('norms.1', 'norm2')
+                k = k.replace('norms.2', 'norm3')
+                
+                # 3.3 映射 Feed Forward Network (FFN)
+                # MMCV: ffns.0.layers.0 -> PyTorch: linear1
+                # MMCV: ffns.0.layers.1 -> PyTorch: linear2
+                if 'ffns.0.layers.0' in k:
+                    k = k.replace('ffns.0.layers.0', 'linear1')
+                elif 'ffns.0.layers.1' in k:
+                    k = k.replace('ffns.0.layers.1', 'linear2')
+                
+                # 3.4 映射 Self-Attention (attentions.0)
+                if 'attentions.0' in k:
                     k = k.replace('attentions.0', 'self_attn')
+                    k = k.replace('.attn.', '.') # 去掉 MMCV wrapper 层
+                
+                # 3.5 映射 Cross-Attention (attentions.1 / Deformable)
+                elif 'attentions.1' in k:
+                    k = k.replace('attentions.1', 'cross_attn')
+                    # 你的 PyTorchMSDeformAttn 定义的变量名
+                    k = k.replace('output_project', 'output_proj') 
+                    k = k.replace('sampling_offsets', 'sampling_offsets') # 保持不变
+                    k = k.replace('attention_weights', 'attention_weights') # 保持不变
+                    k = k.replace('value_proj', 'value_proj') # 保持不变
             
+            # 保存 Decoder 及其他层的权重
             new_state_dict[k] = v
 
         # 执行加载
-        missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
-
-        # 打印诊断信息
-        print(f"成功加载 Key 数量: {len(new_state_dict) - len(missing_keys)}")
-        print(f"缺失 Key 数量: {len(missing_keys)}")
-
-        if len(missing_keys) > 0:
-            print("前 100 个缺失的 Key (请检查是否是关键层):")
-            for k in missing_keys[:100]:
-                print(f" - {k}")
-
-        # 诊断脚本
-        print("\n========== 权重 Key 诊断 ==========")
-        keys = list(ckpt['network'].keys())
-
-        # 1. 打印前 30 个 Key (看看 Encoder 叫什么)
-        # print("--- Top 30 Keys ---")
-        # for k in keys[:30]:
-        #     print(k)
-
-        # 2. 搜索包含 'hand' 的 Key (看看 Hand Decoder 叫什么)
-        print("\n--- Hand Keys Sample ---")
-        hand_keys = [k for k in keys if 'hand' in k]
-        for k in hand_keys[:20]: # 只打前20个
-            print(k)
-
-        # 3. 搜索包含 'sampling_offsets' 的 Key (看看 Attention 在哪)
-        print("\n--- Attention Keys Sample ---")
-        attn_keys = [k for k in keys if 'sampling_offsets' in k]
-        for k in attn_keys[:5]:
-            print(k)
-
-        # 重点检查 Attention
-        attn_loaded = any("sampling_offsets" in k and k not in missing_keys for k in model.state_dict())
-        if attn_loaded:
-            print(">>> 恭喜：Deformable Attention 权重加载成功！")
+        msg = model.load_state_dict(new_state_dict, strict=False)
+        
+        # 打印最终结果
+        print("\n========== 加载报告 ==========")
+        print(f"Missing Keys: {len(msg.missing_keys)}")
+        # 过滤掉一些无关紧要的 missing keys (比如 clip loss 的 logit_scale)
+        real_missing = [k for k in msg.missing_keys if 'encoder' in k or 'decoder' in k]
+        if len(real_missing) > 0:
+            print("警告：关键层依然缺失 (前5个):")
+            for k in real_missing[:5]: print(f" - {k}")
         else:
-            print(">>> 警告：Deformable Attention 权重依然缺失，可能需要进一步检查 Key 前缀。")
-
+            print("完美！Encoder 和 Decoder 权重已全部加载。")
         self.model = model
-
 # model.eval()

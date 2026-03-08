@@ -1,0 +1,5 @@
+pretrained_models/
+*__pycache__
+*output
+common/utils/human_model_files/
+*hmf.zip
