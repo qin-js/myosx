@@ -210,21 +210,22 @@ class Demoer(Base):
 
         # prepare network
         # —————————————— 旧代码 ——————————————————
-        # self.logger.info("Creating graph...")
-        # model = get_model('test')
-        # model = DataParallel(model).cuda()
-        # ckpt = torch.load(cfg.pretrained_model_path)
+        self.logger.info("Creating graph...")
+        model = get_model('test')
+        model = DataParallel(model).cuda()
+        ckpt = torch.load(cfg.pretrained_model_path)
 
-        # from collections import OrderedDict
-        # new_state_dict = OrderedDict()
-        # for k, v in ckpt['network'].items():
-        #     k = k.replace('module.backbone', 'module.encoder').replace('body_rotation_net', 'body_regressor').replace(
-        #         'hand_rotation_net', 'hand_regressor')
-        #     new_state_dict[k] = v
-        # model.load_state_dict(new_state_dict, strict=False)
-        # model.eval()
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for k, v in ckpt['network'].items():
+            k = k.replace('module.backbone', 'module.encoder').replace('body_rotation_net', 'body_regressor').replace(
+                'hand_rotation_net', 'hand_regressor')
+            new_state_dict[k] = v
+        model.load_state_dict(new_state_dict, strict=False)
+        model.eval()
 
-        # self.model = model
+        self.model = model
+        return 
         # ————————————————————————————————————————
 
         # 假设 model 已经是你用 get_model() 获取到的纯 PyTorch 模型
