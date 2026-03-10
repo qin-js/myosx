@@ -224,6 +224,7 @@ class Model(nn.Module):
         # [-2]: scale=2, because the roi size = (hand_hm_shape*scale//2)
         hand_coord_init = self.heatmap2norm(hand_joint_img, cfg.output_hand_hm_shape)
         hand_img_feat_joints = self.hand_decoder(hand_feats, coord_init=hand_coord_init.detach(), query_init=hand_img_feat_joints)
+        print(f"hand_img_feat_joints.shape: {hand_img_feat_joints.shape}")
         # hand regression head
         hand_pose = self.hand_regressor(hand_img_feat_joints, hand_joint_img.detach())
         hand_pose = rot6d_to_axis_angle(hand_pose.reshape(-1, 6)).reshape(hand_img_feat_joints.shape[0], -1)  # (2N, J_R*3)

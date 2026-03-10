@@ -187,17 +187,13 @@ class PoseurDecoder(nn.Module):
             ) for _ in range(num_layers)
         ])
 
-    def forward(self, x):
-        # x: [B, 3, H, W] (如果用了 internal backbone，这里应该是图片/RoI Crop)
-        # 或者 x: List[Tensor] (如果没用 internal backbone)
-        
+    def forward(self, x, coord_init=None, query_init=None):
         bs = 0
         features = []
 
+        # 1. Internal Backbone Forward
         if self.use_internal_backbone:
-            # 假设 x 是 tensor [B, 3, H, W]
             bs = x.shape[0]
-            # ResNet Forward
             x = self.backbone['conv1'](x)
             x = self.backbone['bn1'](x)
             x = self.backbone['relu'](x)
@@ -206,17 +202,16 @@ class PoseurDecoder(nn.Module):
             c1 = self.backbone['layer1'](x)
             c2 = self.backbone['layer2'](c1)
             c3 = self.backbone['layer3'](c2)
-            c4 = self.backbone['layer4'](c3)
-            
-            features = [c1, c2, c3, c4]
+            if self.num_levels > 3:
+                c4 = self.backbone['layer4'](c3)
+                features = [c1, c2, c3, c4]
+            else:
+                features = [c1, c2, c3]
         else:
             features = x
             bs = features[0].shape[0]
 
-        # ... (后续 Transformer 逻辑保持不变) ...
-        # src_flatten, spatial_shapes, attention ... 
-        # 直接复制之前的 forward 逻辑即可，注意变量名 features
-        
+        # 2. Multi-scale Feature Preparation
         srcs, masks, pos_embeds = [], [], []
         for l, src in enumerate(features):
             src = self.input_proj[l](src)
@@ -230,20 +225,39 @@ class PoseurDecoder(nn.Module):
         spatial_shapes = torch.as_tensor([(s.shape[2], s.shape[3]) for s in srcs], dtype=torch.long, device=src_flatten.device)
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
         
-        query_embed = self.query_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
-        tgt = torch.zeros_like(query_embed[..., :self.d_model])
-        query_pos = query_embed[..., :self.d_model]
-        reference_points = torch.sigmoid(self.bbox_embed[0](query_pos))
-        
+        # 3. Query & Reference Points Initialization
+        if query_init is not None:
+            tgt = query_init
+            query_pos = torch.zeros_like(tgt)
+        else:
+            query_embed = self.query_embed.weight.unsqueeze(0).repeat(bs, 1, 1)
+            tgt = torch.zeros_like(query_embed[..., :self.d_model])
+            query_pos = query_embed[..., :self.d_model]
+
+        if coord_init is not None:
+            reference_points = coord_init
+            # [关键修复] 如果传入的是 3D 坐标 (x,y,z)，强制切片为 2D (x,y)
+            if reference_points.shape[-1] == 3:
+                reference_points = reference_points[..., :2]
+        else:
+            reference_points = torch.sigmoid(self.bbox_embed[0](query_pos))
+
+        # 4. Decoder Layers Loop
         outputs_coords = []
         for lid, layer in enumerate(self.layers):
             ref_points_input = reference_points[:, :, None, :].repeat(1, 1, self.num_levels, 1)
+            
+            # Forward
             tgt = layer(tgt, query_pos, ref_points_input, src_flatten, spatial_shapes, level_start_index)
+            
+            # BBox Refinement
             tmp = self.bbox_embed[lid](tgt)
-            tmp = tmp + torch.inverse_sigmoid(reference_points)
+            tmp = tmp + torch.logit(reference_points.clamp(1e-4, 1-1e-4))
             reference_points = tmp.sigmoid()
+            
             outputs_coords.append(reference_points)
-        return torch.stack(outputs_coords)
+            
+        return tgt
 
 # ==============================================================================
 # 3. ViT Backbone
@@ -602,7 +616,11 @@ class Model(nn.Module):
         _, hand_joint_img, hand_img_feat_joints = self.hand_position_net(hand_feats[-2])  # (2N, J_P, 3) in (hand_hm_shape[2], hand_hm_shape[1], hand_hm_shape[0]) space
         # [-2]: scale=2, because the roi size = (hand_hm_shape*scale//2)
         hand_coord_init = self.heatmap2norm(hand_joint_img, cfg.output_hand_hm_shape)
+        print(f"hand_coord_init.shape: {hand_coord_init.shape}")
+        print(f"init_hand_img_feat_joints.shape: {hand_img_feat_joints.shape}")
+        print((f"hand_feats[-2].shape: {hand_feats[0].shape}"))
         hand_img_feat_joints = self.hand_decoder(hand_feats, coord_init=hand_coord_init.detach(), query_init=hand_img_feat_joints)
+        # print(f"hand_img_feat_joints.shape: {hand_img_feat_joints[0].shape}, {hand_img_feat_joints[1].shape}")
         # hand regression head
         hand_pose = self.hand_regressor(hand_img_feat_joints, hand_joint_img.detach())
         hand_pose = rot6d_to_axis_angle(hand_pose.reshape(-1, 6)).reshape(hand_img_feat_joints.shape[0], -1)  # (2N, J_R*3)

@@ -211,22 +211,23 @@ class Demoer(Base):
 
         # prepare network
         # —————————————— 旧代码 ——————————————————
-        self.logger.info("Creating graph...")
-        model = get_model('test')
-        model = DataParallel(model).cuda()
-        ckpt = torch.load(cfg.pretrained_model_path)
+        if cfg.decoder_setting != "pytorch":
+            self.logger.info("Creating graph...")
+            model = get_model('test')
+            model = DataParallel(model).cuda()
+            ckpt = torch.load(cfg.pretrained_model_path)
 
-        from collections import OrderedDict
-        new_state_dict = OrderedDict()
-        for k, v in ckpt['network'].items():
-            k = k.replace('module.backbone', 'module.encoder').replace('body_rotation_net', 'body_regressor').replace(
-                'hand_rotation_net', 'hand_regressor')
-            new_state_dict[k] = v
-        model.load_state_dict(new_state_dict, strict=False)
-        model.eval()
+            from collections import OrderedDict
+            new_state_dict = OrderedDict()
+            for k, v in ckpt['network'].items():
+                k = k.replace('module.backbone', 'module.encoder').replace('body_rotation_net', 'body_regressor').replace(
+                    'hand_rotation_net', 'hand_regressor')
+                new_state_dict[k] = v
+            model.load_state_dict(new_state_dict, strict=False)
+            model.eval()
 
-        self.model = model
-        return 
+            self.model = model
+            return model
         # ————————————————————————————————————————
 
         # 假设 model 已经是你用 get_model() 获取到的纯 PyTorch 模型
@@ -237,90 +238,219 @@ class Demoer(Base):
         # ==============================================================================
         print(f"Loading checkpoint from {cfg.pretrained_model_path} ...")
         ckpt = torch.load(cfg.pretrained_model_path, map_location='cpu')
+        src_state_dict = ckpt['network'] if 'network' in ckpt else ckpt['state_dict']
         
-        if 'network' in ckpt: src_state_dict = ckpt['network']
-        elif 'state_dict' in ckpt: src_state_dict = ckpt['state_dict']
-        else: src_state_dict = ckpt
+        # 清洗源权重 key，去掉 module. 前缀
+        src_state_dict = {k.replace('module.', ''): v for k, v in src_state_dict.items()}
         
+        from collections import OrderedDict
         new_state_dict = OrderedDict()
+        model_state_dict = model.state_dict()
         
-        for k, v in src_state_dict.items():
-            if k.startswith('module.'): k = k[7:]
+        print("开始模糊匹配权重...")
+        
+        for model_key in model_state_dict.keys():
+            # -----------------------------------------------------------
+            # 特殊处理: pos_embed 形状适配
+            if 'encoder.pos_embed' == model_key:
+                target_shape = model_state_dict[model_key].shape
+                v = src_state_dict[model_key]
+                if v.shape != target_shape:
+                    print(f"  [Encoder] Resizing pos_embed: {v.shape} -> {target_shape}")
+                    cls_pos = v[:, 0:1, :]
+                    patch_pos = v[:, 1:, :]
+                    task_pos = cls_pos.repeat(1, 31, 1)
+                    v = torch.cat([task_pos, patch_pos], dim=1)
             
-            # ----------------------------------------------------------------------
-            # 1. Encoder (ViT) 
-            # ----------------------------------------------------------------------
-            if k.startswith('backbone.') or k.startswith('encoder.'):
-                new_k = k.replace('backbone.', 'encoder.')
+                new_state_dict[model_key] = v
+                continue
+            # 1. 策略 A: 精确匹配 (最优先)
+            # -----------------------------------------------------------
+            if model_key in src_state_dict:
+                new_state_dict[model_key] = src_state_dict[model_key]
+                continue
                 
-                # 处理 pos_embed 形状扩展 (193 -> 223)
-                if 'pos_embed' in new_k:
-                    if v.shape[1] == 193 and model.encoder.pos_embed.shape[1] == 223:
-                        # print(f"Adapting pos_embed {v.shape} -> {model.encoder.pos_embed.shape}")
-                        cls_pos = v[:, 0:1, :]
-                        patch_pos = v[:, 1:, :]
-                        task_pos = cls_pos.repeat(1, 31, 1) # 复制 31 份
-                        v = torch.cat([task_pos, patch_pos], dim=1)
-                
-                # 务必保存修改后的 Key
-                new_state_dict[new_k] = v
-                continue # 结束当前循环，处理下一个 Key
+            # -----------------------------------------------------------
+            # 2. 策略 B: 针对 StandardViT (Encoder) 的后缀匹配
+            # -----------------------------------------------------------
+            if 'encoder.' in model_key:
+                # 去掉 encoder. 前缀，找后缀
+                # 例如: encoder.norm.weight -> 找 ...norm.weight
+                suffix = model_key.replace('encoder.', '') 
 
-            # ----------------------------------------------------------------------
-            # 2. Regressor 头
-            # ----------------------------------------------------------------------
-            k = k.replace('body_rotation_net', 'body_regressor')
-            k = k.replace('hand_rotation_net', 'hand_regressor')
-            
-            # ----------------------------------------------------------------------
-            # 3. Decoder (Hand/Face) - MMCV 到 PyTorch 的复杂映射
-            # ----------------------------------------------------------------------
-            if 'transformer.decoder.' in k:
-                # 3.1 去掉前缀
-                k = k.replace('keypoint_head.transformer.decoder.', '')
+                # [新增] 如果是 norm，尝试匹配 last_norm
+                if suffix == 'norm.weight':
+                    suffix = 'last_norm.weight'
+                elif suffix == 'norm.bias':
+                    suffix = 'last_norm.bias'
                 
-                # 3.2 映射 Norm 层 (MMCV: norms.0 -> PyTorch: norm1)
-                k = k.replace('norms.0', 'norm1')
-                k = k.replace('norms.1', 'norm2')
-                k = k.replace('norms.2', 'norm3')
+                # 在源权重中寻找以 suffix 结尾，且包含 backbone 或 encoder 的 key
+                candidates = [k for k in src_state_dict.keys() if k.endswith(suffix) and ('backbone' in k or 'encoder' in k)]
                 
-                # 3.3 映射 Feed Forward Network (FFN)
-                # MMCV: ffns.0.layers.0 -> PyTorch: linear1
-                # MMCV: ffns.0.layers.1 -> PyTorch: linear2
-                if 'ffns.0.layers.0' in k:
-                    k = k.replace('ffns.0.layers.0', 'linear1')
-                elif 'ffns.0.layers.1' in k:
-                    k = k.replace('ffns.0.layers.1', 'linear2')
+                if len(candidates) == 1:
+                    src_key = candidates[0]
+                    v = src_state_dict[src_key]
+                    
+                    # 特殊处理: pos_embed 形状适配
+                    if 'pos_embed' in model_key:
+                        target_shape = model_state_dict[model_key].shape
+                        if v.shape != target_shape:
+                            # print(f"  [Encoder] Resizing pos_embed: {v.shape} -> {target_shape}")
+                            cls_pos = v[:, 0:1, :]
+                            patch_pos = v[:, 1:, :]
+                            task_pos = cls_pos.repeat(1, 31, 1)
+                            v = torch.cat([task_pos, patch_pos], dim=1)
+                    
+                    new_state_dict[model_key] = v
+                    continue
+
+            # -----------------------------------------------------------
+            # 3. 策略 C: 针对 Decoder 的智能映射
+            # -----------------------------------------------------------
+            if 'decoder' in model_key:
+                # 构造 MMCV 风格的 key 进行尝试
+                # PyTorch Key: hand_decoder.layers.0.linear1.weight
+                # 目标 MMCV Key 可能长这样: ...transformer.decoder.layers.0.ffns.0.layers.0.weight
                 
-                # 3.4 映射 Self-Attention (attentions.0)
-                if 'attentions.0' in k:
-                    k = k.replace('attentions.0', 'self_attn')
-                    k = k.replace('.attn.', '.') # 去掉 MMCV wrapper 层
+                # 提取核心部分: layers.0.linear1.weight
+                core_key = model_key.split('decoder.')[-1] 
                 
-                # 3.5 映射 Cross-Attention (attentions.1 / Deformable)
-                elif 'attentions.1' in k:
-                    k = k.replace('attentions.1', 'cross_attn')
-                    # 你的 PyTorchMSDeformAttn 定义的变量名
-                    k = k.replace('output_project', 'output_proj') 
-                    k = k.replace('sampling_offsets', 'sampling_offsets') # 保持不变
-                    k = k.replace('attention_weights', 'attention_weights') # 保持不变
-                    k = k.replace('value_proj', 'value_proj') # 保持不变
-            
-            # 保存 Decoder 及其他层的权重
-            new_state_dict[k] = v
+                # 映射表: PyTorch命名 -> MMCV命名片段
+                mapping = {
+                    'linear1': 'ffns.0.layers.0', # 或 ffns.0.layers.0.linear
+                    'linear2': 'ffns.0.layers.1', # 注意 MMCV 可能是 layers.1
+                    'norm1': 'norms.0',
+                    'norm2': 'norms.1',
+                    'norm3': 'norms.2',
+                    'self_attn': 'attentions.0',
+                    'cross_attn': 'attentions.1',
+                    'value_proj': 'value_project', # 有时是 value_project
+                    'output_proj': 'output_project'
+                }
+                
+                search_key = core_key
+                for py_name, mmcv_name in mapping.items():
+                    search_key = search_key.replace(py_name, mmcv_name)
+                
+                # 尝试在源权重中找包含 search_key 的项
+                # 过滤条件: 必须包含 transformer.decoder
+                candidates = [k for k in src_state_dict.keys() 
+                            if search_key in k 
+                            and ('transformer.decoder' in k)
+                            and model_key.split('.')[0] in k] # 确保 hand 对应 hand, face 对应 face
+                
+                # 如果没找到，尝试 linear2 的另一种可能 (layers.3)
+                if not candidates and 'linear2' in model_key:
+                    alt_key = search_key.replace('ffns.0.layers.1', 'ffns.0.layers.3')
+                    candidates = [k for k in src_state_dict.keys() if alt_key in k and 'transformer.decoder' in k]
+
+                if len(candidates) >= 1:
+                    # 取最短的那个通常是正确的 (避免匹配到 gradients 等奇怪东西)
+                    best_candidate = min(candidates, key=len)
+                    # print(f"  [Decoder] Mapping {model_key} <- {best_candidate}")
+                    new_state_dict[model_key] = src_state_dict[best_candidate]
+                    continue
+
+            # 5. 策略 E: Self-Attention 权重合并 (解决 in_proj_weight 缺失)
+            # -----------------------------------------------------------
+            if 'self_attn.in_proj_weight' in model_key:
+                # model_key 例子: hand_decoder.layers.0.self_attn.in_proj_weight
+                # 我们需要找到源权重中的 q_proj, k_proj, v_proj
+                
+                # 1. 构建源权重的基准前缀
+                # 尝试将 .self_attn.in_proj_weight 替换为 MMCV 风格的前缀
+                # 假设 MMCV 路径: ...transformer.decoder.layers.0.attentions.0.attn.
+                
+                # 提取 layers.x
+                layer_idx = model_key.split('layers.')[1].split('.')[0] # 获取 '0', '1' 等
+                decoder_type = 'hand' if 'hand' in model_key else 'face'
+                
+                # 构造搜索前缀
+                prefix_candidates = [
+                    f"{decoder_type}_decoder.keypoint_head.transformer.decoder.layers.{layer_idx}.attentions.0.attn.", # MMCV 标准
+                    f"transformer.decoder.layers.{layer_idx}.attentions.0.attn.", # 简化版
+                ]
+                
+                q, k, v = None, None, None
+                
+                # 在源权重中搜索 q, k, v
+                for prefix in prefix_candidates:
+                    # 注意：有些权重叫 q_proj, 有些叫 in_proj_q 等，这里假设最常见的 q_proj
+                    q_name = prefix + "in_proj_weight" # 有时 MMCV 也是合并的，只是路径深
+                    if q_name in src_state_dict:
+                        new_state_dict[model_key] = src_state_dict[q_name]
+                        break
+                    
+                    # 如果是分离的
+                    q_name = prefix + "q_proj.weight"
+                    k_name = prefix + "k_proj.weight"
+                    v_name = prefix + "v_proj.weight"
+                    
+                    # 尝试查找 (模糊匹配)
+                    q_cand = [key for key in src_state_dict.keys() if key.endswith(q_name)]
+                    k_cand = [key for key in src_state_dict.keys() if key.endswith(k_name)]
+                    v_cand = [key for key in src_state_dict.keys() if key.endswith(v_name)]
+                    
+                    if q_cand and k_cand and v_cand:
+                        q = src_state_dict[q_cand[0]]
+                        k = src_state_dict[k_cand[0]]
+                        v = src_state_dict[v_cand[0]]
+                        
+                        # [核心操作] 合并 Q, K, V -> in_proj_weight
+                        # print(f"  Merging QKV for {model_key}")
+                        new_state_dict[model_key] = torch.cat([q, k, v], dim=0)
+                        break
+                
+                if model_key in new_state_dict:
+                    continue
+
+            # 处理 bias (同理)
+            if 'self_attn.in_proj_bias' in model_key:
+                layer_idx = model_key.split('layers.')[1].split('.')[0]
+                # 简化逻辑，只找后缀
+                suffix_q = f"layers.{layer_idx}.attentions.0.attn.q_proj.bias"
+                suffix_k = f"layers.{layer_idx}.attentions.0.attn.k_proj.bias"
+                suffix_v = f"layers.{layer_idx}.attentions.0.attn.v_proj.bias"
+                
+                q_cand = [key for key in src_state_dict.keys() if key.endswith(suffix_q)]
+                k_cand = [key for key in src_state_dict.keys() if key.endswith(suffix_k)]
+                v_cand = [key for key in src_state_dict.keys() if key.endswith(suffix_v)]
+                
+                if q_cand and k_cand and v_cand:
+                    q = src_state_dict[q_cand[0]]
+                    k = src_state_dict[k_cand[0]]
+                    v = src_state_dict[v_cand[0]]
+                    new_state_dict[model_key] = torch.cat([q, k, v], dim=0)
+                    continue
+                    
+            # 处理 out_proj (MMCV 叫 out_proj 或 output_proj)
+            if 'self_attn.out_proj.weight' in model_key:
+                layer_idx = model_key.split('layers.')[1].split('.')[0]
+                suffix = f"layers.{layer_idx}.attentions.0.attn.out_proj.weight"
+                cand = [key for key in src_state_dict.keys() if key.endswith(suffix)]
+                if cand:
+                    new_state_dict[model_key] = src_state_dict[cand[0]]
+                    continue
+
+            # -----------------------------------------------------------
+            # 4. 策略 D: Regressor 简单替换
+            # -----------------------------------------------------------
+            if 'regressor' in model_key:
+                old_name = model_key.replace('regressor', 'rotation_net')
+                candidates = [k for k in src_state_dict.keys() if k.endswith(old_name)]
+                if candidates:
+                    new_state_dict[model_key] = src_state_dict[candidates[0]]
 
         # 执行加载
         msg = model.load_state_dict(new_state_dict, strict=False)
         
-        # 打印最终结果
-        print("\n========== 加载报告 ==========")
-        print(f"Missing Keys: {len(msg.missing_keys)}")
-        # 过滤掉一些无关紧要的 missing keys (比如 clip loss 的 logit_scale)
-        real_missing = [k for k in msg.missing_keys if 'encoder' in k or 'decoder' in k]
-        if len(real_missing) > 0:
-            print("警告：关键层依然缺失 (前5个):")
-            for k in real_missing[:5]: print(f" - {k}")
-        else:
-            print("完美！Encoder 和 Decoder 权重已全部加载。")
+        # 最终检查
+        print(f"\nMissing Keys Count: {len(msg.missing_keys)}")
+        if len(msg.missing_keys) > 0:
+            print("Still missing (example):", msg.missing_keys[:3])
+            with open('missing_keys.txt', 'w') as f:
+                f.write('\n'.join(msg.missing_keys))
+            with open('unexpected_keys.txt', 'w') as f:
+                f.write('\n'.join(msg.unexpected_keys))
         self.model = model
 # model.eval()
