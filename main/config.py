@@ -5,7 +5,7 @@ import sys
 class Config:
 
     # dataset setting
-    dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody']
+    dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500']
     trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
 
     ## UBody setting
