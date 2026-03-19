@@ -62,7 +62,7 @@ class Model(nn.Module):
         # self.trainable_modules = [self.encoder, self.body_position_net, self.body_regressor,
         #                           self.box_net, self.hand_position_net, self.hand_roi_net, self.hand_regressor,
         #                           self.face_regressor, self.face_roi_net, self.face_position_net]
-        self.special_trainable_modules = [self.hand_decoder, self.face_decoder]
+        # self.special_trainable_modules = [self.hand_decoder, self.face_decoder]
 
         # ---- 定义哪些模块冻结 ----
         self.frozen_modules = [
@@ -74,7 +74,23 @@ class Model(nn.Module):
             'face_roi_net',
         ]
 
+
+        # 新模块：使用正常学习率
         self.trainable_modules = [
+            self.hand_position_net,
+            self.hand_decoder,
+            self.face_position_net,
+            self.face_decoder,
+        ]
+
+        # 回归网络：使用较小学习率（从预训练微调）
+        self.special_trainable_modules = [
+            self.hand_regressor,
+            self.face_regressor,
+        ]
+
+        # 所有需要训练的模块名称（用于 freeze/unfreeze 判断）
+        self.trainable_module_names = [
             'hand_position_net',
             'hand_decoder',
             'hand_regressor',
@@ -82,6 +98,7 @@ class Model(nn.Module):
             'face_decoder',
             'face_regressor',
         ]
+
 
     def freeze_modules(self):
         """
