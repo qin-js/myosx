@@ -110,14 +110,31 @@ class Model(nn.Module):
         trainable_param_count = 0
 
         for module_name in self.frozen_modules:
-            module = getattr(self, module_name)
+            if isinstance(module_name, str):
+                if hasattr(self, module_name):
+                    module = getattr(self, module_name)
+                else:
+                    print(f"⚠️ 警告: 模型中没有名为 '{module_name}' 的模块，跳过冻结。")
+                    continue
+            else:
+                # 如果你不小心传了 self.encoder 进来，走这个分支
+                module = module_name
+            
             module.eval()
             for param in module.parameters():
                 param.requires_grad = False
                 frozen_param_count += param.numel()
 
         for module_name in self.trainable_modules:
-            module = getattr(self, module_name)
+            if isinstance(module_name, str):
+                if hasattr(self, module_name):
+                    module = getattr(self, module_name)
+                else:
+                    print(f"⚠️ 警告: 模型中没有名为 '{module_name}' 的模块，跳过冻结。")
+                    continue
+            else:
+                # 如果你不小心传了 self.encoder 进来，走这个分支
+                module = module_name
             module.train()
             for param in module.parameters():
                 param.requires_grad = True
@@ -355,7 +372,7 @@ class Model(nn.Module):
 
         # 1. Encoder
         img_feat, task_tokens = self.encoder(body_img)  # task_token:[bs, N, c]
-        print(img_feat.shape)
+        # print(img_feat.shape)
         shape_token, cam_token, expr_token, jaw_pose_token, hand_token, body_pose_token = \
             task_tokens[:, 0], task_tokens[:, 1], task_tokens[:, 2], task_tokens[:, 3], task_tokens[:, 4:6], task_tokens[:, 6:]
 
@@ -383,8 +400,8 @@ class Model(nn.Module):
         _, hand_joint_img, hand_img_feat_joints = self.hand_position_net(hand_feats[-2])  # (2N, J_P, 3) in (hand_hm_shape[2], hand_hm_shape[1], hand_hm_shape[0]) space
         # [-2]: scale=2, because the roi size = (hand_hm_shape*scale//2)
         hand_coord_init = self.heatmap2norm(hand_joint_img, cfg.output_hand_hm_shape)
-        print(f"hand_coord_init: {hand_coord_init.shape}, hand_img_feat_joints: {hand_img_feat_joints.shape}, hand_feats[-2]: {hand_feats[-2].shape}")
-        # hand_img_feat_joints = self.hand_decoder(hand_feats, coord_init=hand_coord_init.detach(), query_init=hand_img_feat_joints)
+        # print(f"hand_coord_init: {hand_coord_init.shape}, hand_img_feat_joints: {hand_img_feat_joints.shape}, hand_feats[-2]: {hand_feats[-2].shape}")
+        hand_img_feat_joints = self.hand_decoder(hand_feats, coord_init=hand_coord_init[:, :, :2].detach(), query_init=hand_img_feat_joints)
 
         # hand regression head
         hand_pose = self.hand_regressor(hand_img_feat_joints, hand_joint_img.detach())
@@ -404,7 +421,7 @@ class Model(nn.Module):
         # face keypoint-guided deformable decoder
         _, face_joint_img, face_img_feat_joints = self.face_position_net(face_feats[-2])  # (N, J_P, 3) in (face_hm_shape[2], face_hm_shape[1], face_hm_shape[0]) space
         face_coord_init = self.heatmap2norm(face_joint_img, cfg.output_face_hm_shape)
-        # face_img_feat_joints = self.face_decoder(face_feats, coord_init=face_coord_init.detach(), query_init=face_img_feat_joints)
+        face_img_feat_joints = self.face_decoder(face_feats, coord_init=face_coord_init[:, :, :2].detach(), query_init=face_img_feat_joints)
         # face regression head
         expr, jaw_pose = self.face_regressor(face_img_feat_joints, face_joint_img.detach(), face_feats[-1])
         jaw_pose = rot6d_to_axis_angle(jaw_pose)
@@ -615,16 +632,16 @@ def get_model(mode):
         
         # Hand Decoder
         # 手部解码器
-        self.hand_decoder = HandDecoder(
+        hand_decoder = HandDecoder(
             d_model=256,                          # 与 hand_conv 输出通道一致
             nhead=8,
             num_decoder_layers=3,
             dim_feedforward=1024,
             dropout=0.1,
-            n_levels=len(hand_feats),             # 多尺度特征层数
+            n_levels=3,             # 多尺度特征层数
             n_points=4,
             num_joints=cfg.hand_pos_joint_num,    # 通常 20
-            feat_channels=cfg.feat_dim//2,               # ROI 特征通道 (如 768)
+            feat_channels=[256, 512, 1024],               # ROI 特征通道 (如 768)
         )
 
     # 3. Face
@@ -650,16 +667,16 @@ def get_model(mode):
         
         # Face Decoder:
         # 脸部解码器
-        self.face_decoder = FaceDecoder(
+        face_decoder = FaceDecoder(
             d_model=256,
             nhead=8,
             num_decoder_layers=3,
             dim_feedforward=1024,
             dropout=0.1,
-            n_levels=len(face_feats),
+            n_levels=3,
             n_points=4,
             num_joints=cfg.face_pos_joint_num,    # 通常 68
-            feat_channels=cfg.feat_dim//2,
+            feat_channels=[256, 512, 1024],
         )
 
     # 4. Initialization

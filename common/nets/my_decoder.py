@@ -623,6 +623,7 @@ class HandDecoder(nn.Module):
         src_flatten = []
         spatial_shapes = []
         for lvl in range(self.n_levels):
+            # print(f"level {lvl}: {feats[lvl].shape}")
             src = self.input_proj[lvl](feats[lvl])  # (B, d_model, H, W)
             B, C, H, W = src.shape
             spatial_shapes.append((H, W))

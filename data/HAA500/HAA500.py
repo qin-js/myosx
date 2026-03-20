@@ -9,9 +9,13 @@ import torch
 from common.utils.human_models import smpl_x
 from common.utils.preprocessing import load_img, process_bbox, augmentation, process_db_coord, process_human_model_output
 from common.utils.transforms import rigid_align
+import random
 
 class HAA500(torch.utils.data.Dataset):
     def __init__(self, transform, data_split):
+        self.MAX_RETRY = 10
+        self.retry = 0
+        self.read_success = 0
         self.transform = transform
         self.data_split = data_split
         
@@ -168,7 +172,19 @@ class HAA500(torch.utils.data.Dataset):
         data = copy.deepcopy(self.datalist[idx])
         img_path, img_shape = data['img_path'], data['img_shape']
 
-        img = load_img(img_path)
+        try:
+            img = load_img(img_path)
+        except (IOError, OSError) as e:
+            if self.retry < self.MAX_RETRY:
+                print(f"[HAA500] Warning: Cannot read {img_path}, skip to random sample")
+                new_idx = random.randint(0, len(self) - 1)
+                self.retry += 1
+                return self.__getitem__(new_idx)
+            else:
+                print(f"[HAA500] Warning: 连续 {self.MAX_RETRY} 次读取失败")
+                self.retry = 0
+                new_idx = random.randint(0, len(self) - 1)
+                return self.__getitem__(new_idx)
         bbox = data['bbox']
         
         # augmentation 内部会根据 self.data_split 是 'train' 还是 'test' 自动选择随机裁剪还是中心裁剪，do_flip 测试时一定是 False

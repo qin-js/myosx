@@ -3,6 +3,7 @@ import math
 import abc
 from torch.utils.data import DataLoader
 import torch.optim
+import torch.nn as nn
 import torchvision.transforms as transforms
 from common.timer import Timer
 from common.logger import colorlogger
@@ -57,59 +58,288 @@ class Trainer(Base):
         super(Trainer, self).__init__(log_name='train_logs.txt')
 
     def get_optimizer(self, model):
+        """
+        构建 optimizer，只包含可训练参数。
+
+        参数分组:
+        ┌─────────────────────────────┬──────────────────┐
+        │ trainable_modules           │ lr = cfg.lr      │
+        │ (hand/face position_net,    │                  │
+        │  hand/face decoder)         │                  │
+        ├─────────────────────────────┼──────────────────┤
+        │ special_trainable_modules   │ lr = cfg.lr *    │
+        │ (hand_regressor,            │   cfg.lr_mult    │
+        │  face_regressor)            │                  │
+        └─────────────────────────────┴──────────────────┘
+        """
         normal_param = []
         special_param = []
-        for module in model.module.special_trainable_modules:
-            special_param += list(module.parameters())
-            # print(module)
+
+        # model.module 因为 DataParallel 包裹
         for module in model.module.trainable_modules:
             normal_param += list(module.parameters())
+
+        for module in model.module.special_trainable_modules:
+            special_param += list(module.parameters())
+
         optim_params = [
-            {  # add normal params first
+            {
                 'params': normal_param,
-                'lr': cfg.lr
+                'lr': cfg.lr,
+                'name': 'new_modules',
             },
             {
                 'params': special_param,
-                'lr': cfg.lr * cfg.lr_mult
+                'lr': cfg.lr * cfg.lr_mult,
+                'name': 'regressors',
             },
         ]
+
         optimizer = torch.optim.Adam(optim_params, lr=cfg.lr)
+
+        # 打印参数统计
+        self.logger.info(f"Optimizer 参数分组:")
+        self.logger.info(f"  new_modules: {sum(p.numel() for p in normal_param):,} params, "
+                         f"lr={cfg.lr}")
+        self.logger.info(f"  regressors:  {sum(p.numel() for p in special_param):,} params, "
+                         f"lr={cfg.lr * cfg.lr_mult}")
+
         return optimizer
 
+    #  模型保存：区分冻结/训练模块
+    # ================================================================
     def save_model(self, state, epoch):
+        """
+        保存 checkpoint:
+        真正的极致节省空间：只保存发生了梯度更新的模块参数。
+        """
         file_path = osp.join(cfg.model_dir, 'snapshot_{}.pth.tar'.format(str(epoch)))
 
-        # do not save smplx layer weights
-        dump_key = []
-        for k in state['network'].keys():
-            if 'smplx_layer' in k:
-                dump_key.append(k)
-        for k in dump_key:
-            state['network'].pop(k, None)
+        # ---- 提取可训练模块(包含新加入的模块 + 微调的Regressor) ----
+        trainable_state = {}
+        for k, v in state['network'].items():
+            # 去掉 "module." 前缀后检查模块名
+            clean_key = k.replace('module.', '', 1)
+            module_name = clean_key.split('.')[0]
+
+            # ⚠️ 注意：这里必须确保你的 trainable_module_names 中
+            # 包含了 'hand_regressor' 和 'face_regressor'，因为它们也在参与训练！
+            # 如果没包含，可以使用 param.requires_grad 判断，或者显式写出：
+            # if module_name in self.model.module.trainable_module_names or \
+            #    module_name in['hand_regressor', 'face_regressor']:
+            if module_name in self.model.module.trainable_module_names:
+                # 过滤掉不需要的 smplx_layer
+                if 'smplx_layer' not in k:
+                    trainable_state[k] = v
+
+        # ---- 核心改动：用精简版替换掉庞大的完整模型 ----
+        state['network'] = trainable_state 
+
+        # 记录冻结/训练信息（便于恢复时验证）
+        state['frozen_modules'] = self.model.module.frozen_modules
+        state['trainable_module_names'] = self.model.module.trainable_module_names
 
         torch.save(state, file_path)
-        self.logger.info("Write snapshot into {}".format(file_path))
+        self.logger.info(f"Write lightweight snapshot into {file_path}")
+        self.logger.info(f"  Saved trainable parameters only: {len(state['network'])} tensors.")
 
+    # ================================================================
+    #  模型加载：从预训练 checkpoint 加载冻结模块权重
+    # ================================================================
     def load_model(self, model, optimizer):
-        if cfg.pretrained_model_path is not None:
-            ckpt_path = cfg.pretrained_model_path
-            ckpt = torch.load(ckpt_path)
+        """
+        加载策略:
+
+        情况 1: cfg.continue_train = True
+          → 从我们自己保存的 checkpoint 恢复（包含新模块权重）
+
+        情况 2: cfg.pretrained_model_path 存在
+          → 从原始 OSX 预训练模型加载冻结模块权重
+          → 新模块保持随机初始化
+        """
+        if cfg.continue_train:
+            # ---- 恢复训练：加载我们自己的 checkpoint ----
+            start_epoch, model, optimizer = self._load_resume_checkpoint(
+                model, optimizer
+            )
+        elif cfg.pretrained_model_path is not None:
+            # ---- 新训练：从原始 OSX 加载冻结模块 ----
             start_epoch = 0
-            model.load_state_dict(ckpt['network'], strict=False)
-            self.logger.info('Load checkpoint from {}'.format(ckpt_path))
+            self._load_pretrained_frozen(model, cfg.pretrained_model_path)
         else:
             start_epoch = 0
+            self.logger.warning("⚠️ 未提供预训练模型！冻结模块使用随机初始化（不推荐）")
 
         return start_epoch, model, optimizer
 
+    def _load_pretrained_frozen(self, model, ckpt_path):
+        """
+        从原始 OSX 预训练 checkpoint 加载冻结模块和 Regressor 的权重。
+        显式跳过新重写的 PositionNet 和 Decoder。
+        """
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+        
+        # 获取原始字典
+        if 'network' in ckpt: pretrained_dict = ckpt['network']
+        elif 'state_dict' in ckpt: pretrained_dict = ckpt['state_dict']
+        elif 'model' in ckpt: pretrained_dict = ckpt['model']
+        else: pretrained_dict = ckpt
+
+        # 1. 预处理：统一剥离 'module.' 前缀，方便后续做纯净的字符串匹配
+        pretrained_dict = {k.replace('module.', ''): v for k, v in pretrained_dict.items()}
+        
+        model_dict = model.state_dict() # 这里的 key 都有 'module.' 前缀 (因为用了 DataParallel)
+        new_state_dict = {}
+
+        loaded_keys = []
+        skipped_keys = []
+        shape_mismatch =[]
+
+        for k, v in pretrained_dict.items():
+            
+            # [映射逻辑 1]: 显式跳过全新重写的模块 (让它们保持随机初始化)
+            if k.startswith('hand_decoder.') or k.startswith('face_decoder.') or \
+               k.startswith('hand_position_net.') or k.startswith('face_position_net.'):
+                skipped_keys.append(k)
+                continue
+                
+            #[映射逻辑 2]: Encoder 的 last_norm 名字替换
+            if 'encoder.last_norm.' in k:
+                k = k.replace('encoder.last_norm.', 'encoder.norm.')
+                
+            # 找到对应在你当前 DataParallel 模型中的 key
+            target_key = 'module.' + k
+            
+            #[映射逻辑 3]: 处理位置编码的自动扩充 (193 -> 223)
+            if k == 'encoder.pos_embed' and target_key in model_dict:
+                target_shape = model_dict[target_key].shape
+                if v.shape[1] == 193 and target_shape[1] == 223:
+                    cls_pos = v[:, :1, :]
+                    patch_pos = v[:, 1:, :]
+                    task_pos = cls_pos.repeat(1, 31, 1)
+                    v = torch.cat([task_pos, patch_pos], dim=1) # 请确认你的拼接顺序
+                    self.logger.info(f"✨ 自动扩充 pos_embed 形状: (1,193,1024) -> {v.shape}")
+
+            # 验证形状并存入新字典
+            if target_key in model_dict:
+                if model_dict[target_key].shape == v.shape:
+                    new_state_dict[target_key] = v
+                    loaded_keys.append(target_key)
+                else:
+                    shape_mismatch.append(f"{target_key}: ckpt {v.shape} vs model {model_dict[target_key].shape}")
+            else:
+                skipped_keys.append(k)
+
+        # 一键加载所有对齐的权重 (包含冻结的 backbone 和需要微调的 regressors)
+        model.load_state_dict(new_state_dict, strict=False)
+
+        # ---- 日志汇报 ----
+        self.logger.info(f"从 {ckpt_path} 加载预训练权重:")
+        self.logger.info(f"  ✅ 成功加载: {len(loaded_keys)} 个参数")
+        self.logger.info(f"  ⏭️  故意跳过/未找到: {len(skipped_keys)} 个参数 (通常是新的 Decoder/PositionNet)")
+
+        if shape_mismatch:
+            self.logger.warning(f"  ⚠️  形状不匹配: {len(shape_mismatch)} 个")
+            for s in shape_mismatch[:5]:
+                self.logger.warning(f"     {s}")
+                
+        # 验证你的冻结模块是否全都被覆盖了
+        frozen_missing =[name for name, param in model.named_parameters() 
+                          if name.replace('module.', '', 1).split('.')[0] in model.module.frozen_modules 
+                          and name not in loaded_keys]
+        
+        if frozen_missing:
+            self.logger.warning(f"  ⚠️  严重警告: 冻结模块中有 {len(frozen_missing)} 个参数未被预训练权重覆盖!")
+            for k in frozen_missing[:10]: self.logger.warning(f"     {k}")
+        else:
+            self.logger.info(f"  🎯 冻结模块安全检查: 完美! 所有冻结参数均已成功加载预训练权重。")
+        # (可选) 同时加载回归网络的预训练权重用于微调
+        # self._load_regressor_weights(model, pretrained_dict)
+
+    def _load_regressor_weights(self, model, pretrained_dict):
+        """
+        从预训练模型加载回归网络权重用于微调。
+        原始 OSX 的 hand_regressor 和 face_regressor 结构没变，可以直接加载。
+        """
+        model_dict = model.state_dict()
+        regressor_loaded = 0
+
+        for k, v in pretrained_dict.items():
+            candidates = [k]
+            if not k.startswith('module.'):
+                candidates.append('module.' + k)
+
+            for candidate_key in candidates:
+                if candidate_key in model_dict:
+                    clean = candidate_key.replace('module.', '', 1)
+                    module_name = clean.split('.')[0]
+
+                    # 只加载回归网络
+                    if module_name in ('hand_regressor', 'face_regressor'):
+                        if model_dict[candidate_key].shape == v.shape:
+                            model_dict[candidate_key] = v
+                            regressor_loaded += 1
+                    break
+
+        model.load_state_dict(model_dict, strict=False)
+        self.logger.info(f"  回归网络预训练加载: {regressor_loaded} 个参数")
+
+    def _load_resume_checkpoint(self, model, optimizer):
+        """
+        恢复训练（两步走加载策略）：
+        1. 先加载冻结基座（从原始 OSX）
+        2. 再加载训练进度（从自己的轻量级 Checkpoint）
+        """
+        # --- 步骤 1: 加载冻结的 Backbone ---
+        if cfg.pretrained_model_path is not None:
+            self.logger.info("Resume Step 1: Loading frozen backbone from original pretrained model...")
+            self._load_pretrained_frozen(model, cfg.pretrained_model_path)
+        else:
+            self.logger.warning("Resume Step 1: No pretrained model found! Backbone will be random!")
+
+        # --- 步骤 2: 加载自己保存的轻量级 Checkpoint ---
+        ckpt_path = cfg.continue_train_path # 假设你配置里指定了要恢复的 snapshot 路径
+        self.logger.info(f"Resume Step 2: Loading trained modules from {ckpt_path}...")
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+        start_epoch = ckpt.get('epoch', 0) + 1
+
+        if 'network' in ckpt:
+            model_dict = model.state_dict()
+            trained_dict = ckpt['network']  # 这里面现在只有 trainable 部分
+
+            loaded = 0
+            for k, v in trained_dict.items():
+                if k in model_dict and model_dict[k].shape == v.shape:
+                    model_dict[k] = v
+                    loaded += 1
+
+            # strict=False 允许只覆盖可训练部分，不动刚刚加载好的 Backbone
+            model.load_state_dict(model_dict, strict=False) 
+            self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
+
+        # ---- 加载 optimizer 状态 ----
+        if 'optimizer' in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt['optimizer'])
+                self.logger.info(f"  成功恢复 optimizer 状态")
+            except Exception as e:
+                self.logger.warning(f"⚠️ 无法恢复 optimizer 状态: {e}")
+
+        self.logger.info(f"从 epoch {start_epoch} 准备继续训练!")
+        return start_epoch, model, optimizer
+        
+    # ================================================================
+    #  学习率获取（不变）
+    # ================================================================
     def get_lr(self):
         for g in self.optimizer.param_groups:
             cur_lr = g['lr']
         return cur_lr
 
+    # ================================================================
+    #  数据加载（不变）
+    # ================================================================
     def _make_batch_generator(self):
-        # data load and construct batch generator
         self.logger.info("Creating dataset...")
         trainset3d_loader = []
         for i in range(len(cfg.trainset_3d)):
@@ -135,26 +365,100 @@ class Trainer(Base):
             trainset_loader = MultipleDatasets(trainset3d_loader + trainset2d_loader, make_same_len=False)
 
         self.itr_per_epoch = math.ceil(len(trainset_loader) / cfg.num_gpus / cfg.train_batch_size)
-        self.batch_generator = DataLoader(dataset=trainset_loader, batch_size=cfg.num_gpus * cfg.train_batch_size,
-                                          shuffle=True, num_workers=cfg.num_thread, pin_memory=True, drop_last=True)
+        self.batch_generator = DataLoader(
+            dataset=trainset_loader,
+            batch_size=cfg.num_gpus * cfg.train_batch_size,
+            shuffle=True,
+            num_workers=cfg.num_thread,
+            pin_memory=True,
+            drop_last=True,
+            persistent_workers=True,    # 保持 worker 存活
+            prefetch_factor=3,          # 内存充足，多预取
+        )
 
+    # ================================================================
+    #  模型构建：集成冻结逻辑
+    # ================================================================
     def _make_model(self):
-        # prepare network
         self.logger.info("Creating graph and optimizer...")
+
+        # 1. 构建模型
         model = get_model('train')
         model = DataParallel(model).cuda()
-        optimizer = self.get_optimizer(model)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, cfg.end_epoch * self.itr_per_epoch,
-                                                            eta_min=1e-6)
+
+        # 2. 加载预训练权重（冻结模块从原始 OSX 加载）
+        optimizer = self.get_optimizer(model)  # 先创建 optimizer（只包含可训练参数）
+
         if cfg.continue_train:
             start_epoch, model, optimizer = self.load_model(model, optimizer)
         else:
             start_epoch = 0
+            if cfg.pretrained_model_path is not None:
+                self._load_pretrained_frozen(model, cfg.pretrained_model_path)
+
+        # 3. 冻结模块
+        model.module.freeze_modules()
+
+        # 4. 设置训练模式（重写的 train() 会保持冻结模块 eval）
         model.train()
-        self.scheduler = scheduler
+
+        # 5. 验证冻结状态
+        self._verify_freeze_status(model)
+
+        # 6. Scheduler
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            cfg.end_epoch * self.itr_per_epoch,
+            eta_min=1e-6,
+        )
+
         self.start_epoch = start_epoch
         self.model = model
         self.optimizer = optimizer
+        self.scheduler = scheduler
+
+    # ================================================================
+    #  验证工具
+    # ================================================================
+    def _verify_freeze_status(self, model):
+        """验证冻结/训练状态是否正确"""
+        frozen_count = 0
+        trainable_count = 0
+        errors = []
+
+        for name, param in model.named_parameters():
+            clean_name = name.replace('module.', '', 1)
+            module_name = clean_name.split('.')[0]
+
+            is_frozen_module = module_name in model.module.frozen_modules
+            is_trainable_module = module_name in model.module.trainable_module_names
+
+            if is_frozen_module:
+                if param.requires_grad:
+                    errors.append(f"❌ {name}: 冻结模块但 requires_grad=True")
+                frozen_count += 1
+            elif is_trainable_module:
+                if not param.requires_grad:
+                    errors.append(f"❌ {name}: 训练模块但 requires_grad=False")
+                trainable_count += 1
+
+        # 检查 BN 层模式
+        for name, module in model.named_modules():
+            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                clean_name = name.replace('module.', '', 1)
+                top_module = clean_name.split('.')[0]
+                if top_module in model.module.frozen_modules and module.training:
+                    errors.append(f"❌ {name}: 冻结模块的 BN 应该在 eval 模式")
+
+        if errors:
+            self.logger.error("冻结状态验证失败:")
+            for e in errors:
+                self.logger.error(f"  {e}")
+            raise RuntimeError("冻结状态异常，请检查 freeze_modules()")
+        else:
+            self.logger.info(f"✅ 冻结状态验证通过: "
+                             f"冻结 {frozen_count} 个参数, "
+                             f"训练 {trainable_count} 个参数")
 
 
 
