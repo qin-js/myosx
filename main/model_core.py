@@ -625,7 +625,7 @@ def get_model(mode):
             use_internal_backbone=False # <--- 开启这个
         )
 
-    else:
+    elif mode == 'train' or mode == "test1":
         hand_roi_net = HandRoI(feat_dim=cfg.feat_dim, upscale=cfg.upscale)
         hand_position_net = DCNv4PositionNet('hand', feat_dim=cfg.feat_dim//2, dcnv4_group=4, num_blocks=3)
         hand_rotation_net = HandRotationNet('hand', feat_dim=256)
@@ -641,7 +641,7 @@ def get_model(mode):
             n_levels=3,             # 多尺度特征层数
             n_points=4,
             num_joints=cfg.hand_pos_joint_num,    # 通常 20
-            feat_channels=[256, 512, 1024],               # ROI 特征通道 (如 768)
+            feat_channels=neck_channels,               # ROI 特征通道 (如 768)
         )
 
     # 3. Face
@@ -660,7 +660,7 @@ def get_model(mode):
             use_internal_backbone=False # <--- 开启这个
         )
     
-    else:
+    elif mode == 'train' or mode == "test1":
         face_roi_net = FaceRoI(feat_dim=cfg.feat_dim, upscale=cfg.upscale)
         face_position_net = DCNv4PositionNet('face', feat_dim=cfg.feat_dim//2, dcnv4_group=4, num_blocks=3)
         face_regressor = FaceRegressor(feat_dim=cfg.feat_dim, joint_feat_dim=256)
@@ -676,7 +676,7 @@ def get_model(mode):
             n_levels=3,
             n_points=4,
             num_joints=cfg.face_pos_joint_num,    # 通常 68
-            feat_channels=[256, 512, 1024],
+            feat_channels=neck_channels,
         )
 
     # 4. Initialization

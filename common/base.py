@@ -504,7 +504,7 @@ class Tester(Base):
 
         # —————————————— 新代码 (纯 PyTorch 实现) ——————————————————
         # 假设 model 已经是你用 get_model() 获取到的纯 PyTorch 模型
-        model = get_model('test')
+        model = get_model('test1')
         model = model.cuda()
         
         from collections import OrderedDict
@@ -622,12 +622,43 @@ class Tester(Base):
 
         # 帮你排查除了你还没重写完的部分，是否还有其他遗漏
         real_missing = [m for m in missing if not ('decoder' in m)]
-        if real_missing:
+        if real_missing or unexpected:
             print(f"\n⚠️ 警告: 以下基础网络部分存在未加载的参数 (请检查拼写):")
             for m in real_missing:
                 print(f"  - {m}")
+            for m in unexpected:
+                print(f"  - {m}")
         else:
             print("\n🎉 完美！骨干网络已全部精准对齐，Decoder 的核心 Transformer 层也已成功映射，不再是随机噪声！")
+
+
+        # --- 步骤 2: 加载自己保存的轻量级 Checkpoint ---
+        ckpt_path = cfg.continue_train_path # 假设你配置里指定了要恢复的 snapshot 路径
+        self.logger.info(f"Resume Step 2: Loading trained modules from {ckpt_path}...")
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+
+        if 'network' in ckpt:
+            model_dict = model.state_dict()
+            trained_dict = ckpt['network']  # 这里面现在只有 trainable 部分
+
+            loaded = 0
+            for k, v in trained_dict.items():
+                if k in model_dict and model_dict[k].shape == v.shape:
+                    model_dict[k] = v
+                    loaded += 1
+
+            # strict=False 允许只覆盖可训练部分，不动刚刚加载好的 Backbone
+            missing, unexpected = model.load_state_dict(model_dict, strict=False) 
+            self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
+
+            if missing:
+                print(f"\n⚠️ 警告: 以下可训练网络部分存在未加载的参数 (请检查拼写):")
+                for m in missing:
+                    print(f"  - {m}")
+            else:
+                print("\n🎉 完美！可训练网络已全部加载")
+        else:
+            raise Exception("Checkpoint 中不存在 'network' 字段，请检查是否正确加载")
         
         model.eval()
         self.model = model
@@ -670,7 +701,7 @@ class Demoer(Base):
         # ————————————————————————————————————————
 
         # 假设 model 已经是你用 get_model() 获取到的纯 PyTorch 模型
-        model = get_model('test')
+        model = get_model('test1')
         with open("my_model_params.txt", "w", encoding="utf-8") as f:
             total = 0
             for name, param in model.named_parameters():
@@ -803,6 +834,34 @@ class Demoer(Base):
                 print(f"  - {m}")
         else:
             print("\n🎉 完美！骨干网络已全部精准对齐，Decoder 的核心 Transformer 层也已成功映射，不再是随机噪声！")
+
+        # --- 步骤 2: 加载自己保存的轻量级 Checkpoint ---
+        ckpt_path = cfg.continue_train_path # 假设你配置里指定了要恢复的 snapshot 路径
+        self.logger.info(f"Resume Step 2: Loading trained modules from {ckpt_path}...")
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+
+        if 'network' in ckpt:
+            model_dict = model.state_dict()
+            trained_dict = ckpt['network']  # 这里面现在只有 trainable 部分
+
+            loaded = 0
+            for k, v in trained_dict.items():
+                if k in model_dict and model_dict[k].shape == v.shape:
+                    model_dict[k] = v
+                    loaded += 1
+
+            # strict=False 允许只覆盖可训练部分，不动刚刚加载好的 Backbone
+            missing, unexpected = model.load_state_dict(model_dict, strict=False) 
+            self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
+
+            if missing:
+                print(f"\n⚠️ 警告: 以下可训练网络部分存在未加载的参数 (请检查拼写):")
+                for m in missing:
+                    print(f"  - {m}")
+            else:
+                print("\n🎉 完美！可训练网络已全部加载")
+        else:
+            raise Exception("Checkpoint 中不存在 'network' 字段，请检查是否正确加载")
         
         self.model = model
 # model.eval()
