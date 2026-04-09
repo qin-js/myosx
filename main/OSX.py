@@ -191,11 +191,31 @@ class Model(nn.Module):
     def forward(self, inputs, targets, meta_info, mode):
 
         body_img = F.interpolate(inputs['img'], cfg.input_body_shape)
-        print(body_img.shape)
+
+        # 可视化：在真正喂给encoder之前/之后都可以，这里放前面最清楚
+        if mode == 'test' and hasattr(cfg, 'visualization') and cfg.visualization.get('enable', False):
+            from common.utils.visualize import save_encoder_visualizations
+
+            # 给当前样本起个名字
+            image_name = 'sample'
+            if isinstance(meta_info, dict):
+                if 'img_path' in meta_info:
+                    image_name = os.path.splitext(os.path.basename(meta_info['img_path'][0] if isinstance(meta_info['img_path'], list) else meta_info['img_path']))[0]
+                elif 'image_file' in meta_info:
+                    image_name = os.path.splitext(os.path.basename(meta_info['image_file'][0] if isinstance(meta_info['image_file'], list) else meta_info['image_file']))[0]
+
+            save_encoder_visualizations(
+                encoder=self.encoder,
+                input_tensor=body_img[:1],   # 只保存batch里第一张
+                vis_cfg=cfg.visualization,
+                img_mean=(0.485, 0.456, 0.406),
+                img_std=(0.229, 0.224, 0.225),
+                image_name=image_name,
+            )
 
         # 1. Encoder
         img_feat, task_tokens = self.encoder(body_img)  # task_token:[bs, N, c]
-        print(img_feat.shape)
+        # print(task_tokens.shape)
         shape_token, cam_token, expr_token, jaw_pose_token, hand_token, body_pose_token = \
             task_tokens[:, 0], task_tokens[:, 1], task_tokens[:, 2], task_tokens[:, 3], task_tokens[:, 4:6], task_tokens[:, 6:]
 

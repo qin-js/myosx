@@ -338,145 +338,57 @@ hand_roi_net.deconv.2.1.bias	(512,)	512
 hand_roi_net.deconv.2.3.weight	(512, 256, 4, 4)	2097152
 hand_roi_net.deconv.2.4.weight	(256,)	256
 hand_roi_net.deconv.2.4.bias	(256,)	256
+hand_position_net.dcnv4_blocks.0.norm1.weight	(512,)	512
+hand_position_net.dcnv4_blocks.0.norm1.bias	(512,)	512
+hand_position_net.dcnv4_blocks.0.dcnv4.offset_mask.weight	(112, 512)	57344
+hand_position_net.dcnv4_blocks.0.dcnv4.offset_mask.bias	(112,)	112
+hand_position_net.dcnv4_blocks.0.dcnv4.value_proj.weight	(512, 512)	262144
+hand_position_net.dcnv4_blocks.0.dcnv4.value_proj.bias	(512,)	512
+hand_position_net.dcnv4_blocks.0.dcnv4.output_proj.weight	(512, 512)	262144
+hand_position_net.dcnv4_blocks.0.dcnv4.output_proj.bias	(512,)	512
+hand_position_net.dcnv4_blocks.0.norm2.weight	(512,)	512
+hand_position_net.dcnv4_blocks.0.norm2.bias	(512,)	512
+hand_position_net.dcnv4_blocks.0.ffn.0.weight	(2048, 512)	1048576
+hand_position_net.dcnv4_blocks.0.ffn.0.bias	(2048,)	2048
+hand_position_net.dcnv4_blocks.0.ffn.2.weight	(512, 2048)	1048576
+hand_position_net.dcnv4_blocks.0.ffn.2.bias	(512,)	512
+hand_position_net.dcnv4_blocks.1.norm1.weight	(512,)	512
+hand_position_net.dcnv4_blocks.1.norm1.bias	(512,)	512
+hand_position_net.dcnv4_blocks.1.dcnv4.offset_mask.weight	(112, 512)	57344
+hand_position_net.dcnv4_blocks.1.dcnv4.offset_mask.bias	(112,)	112
+hand_position_net.dcnv4_blocks.1.dcnv4.value_proj.weight	(512, 512)	262144
+hand_position_net.dcnv4_blocks.1.dcnv4.value_proj.bias	(512,)	512
+hand_position_net.dcnv4_blocks.1.dcnv4.output_proj.weight	(512, 512)	262144
+hand_position_net.dcnv4_blocks.1.dcnv4.output_proj.bias	(512,)	512
+hand_position_net.dcnv4_blocks.1.norm2.weight	(512,)	512
+hand_position_net.dcnv4_blocks.1.norm2.bias	(512,)	512
+hand_position_net.dcnv4_blocks.1.ffn.0.weight	(2048, 512)	1048576
+hand_position_net.dcnv4_blocks.1.ffn.0.bias	(2048,)	2048
+hand_position_net.dcnv4_blocks.1.ffn.2.weight	(512, 2048)	1048576
+hand_position_net.dcnv4_blocks.1.ffn.2.bias	(512,)	512
+hand_position_net.dcnv4_blocks.2.norm1.weight	(512,)	512
+hand_position_net.dcnv4_blocks.2.norm1.bias	(512,)	512
+hand_position_net.dcnv4_blocks.2.dcnv4.offset_mask.weight	(112, 512)	57344
+hand_position_net.dcnv4_blocks.2.dcnv4.offset_mask.bias	(112,)	112
+hand_position_net.dcnv4_blocks.2.dcnv4.value_proj.weight	(512, 512)	262144
+hand_position_net.dcnv4_blocks.2.dcnv4.value_proj.bias	(512,)	512
+hand_position_net.dcnv4_blocks.2.dcnv4.output_proj.weight	(512, 512)	262144
+hand_position_net.dcnv4_blocks.2.dcnv4.output_proj.bias	(512,)	512
+hand_position_net.dcnv4_blocks.2.norm2.weight	(512,)	512
+hand_position_net.dcnv4_blocks.2.norm2.bias	(512,)	512
+hand_position_net.dcnv4_blocks.2.ffn.0.weight	(2048, 512)	1048576
+hand_position_net.dcnv4_blocks.2.ffn.0.bias	(2048,)	2048
+hand_position_net.dcnv4_blocks.2.ffn.2.weight	(512, 2048)	1048576
+hand_position_net.dcnv4_blocks.2.ffn.2.bias	(512,)	512
+hand_position_net.final_norm.weight	(512,)	512
+hand_position_net.final_norm.bias	(512,)	512
+hand_position_net.conv.0.weight	(320, 512, 1, 1)	163840
+hand_position_net.conv.0.bias	(320,)	320
 hand_position_net.hand_conv.0.weight	(256, 512, 1, 1)	131072
 hand_position_net.hand_conv.0.bias	(256,)	256
 hand_position_net.hand_conv.1.weight	(256,)	256
 hand_position_net.hand_conv.1.bias	(256,)	256
-hand_position_net.conv.0.weight	(320, 512, 1, 1)	163840
-hand_position_net.conv.0.bias	(320,)	320
-hand_decoder.layers.0.self_attn.in_proj_weight	(768, 256)	196608
-hand_decoder.layers.0.self_attn.in_proj_bias	(768,)	768
-hand_decoder.layers.0.self_attn.out_proj.weight	(256, 256)	65536
-hand_decoder.layers.0.self_attn.out_proj.bias	(256,)	256
-hand_decoder.layers.0.norm1.weight	(256,)	256
-hand_decoder.layers.0.norm1.bias	(256,)	256
-hand_decoder.layers.0.cross_attn.sampling_offsets.weight	(192, 256)	49152
-hand_decoder.layers.0.cross_attn.sampling_offsets.bias	(192,)	192
-hand_decoder.layers.0.cross_attn.attention_weights.weight	(96, 256)	24576
-hand_decoder.layers.0.cross_attn.attention_weights.bias	(96,)	96
-hand_decoder.layers.0.cross_attn.value_proj.weight	(256, 256)	65536
-hand_decoder.layers.0.cross_attn.value_proj.bias	(256,)	256
-hand_decoder.layers.0.cross_attn.output_proj.weight	(256, 256)	65536
-hand_decoder.layers.0.cross_attn.output_proj.bias	(256,)	256
-hand_decoder.layers.0.norm2.weight	(256,)	256
-hand_decoder.layers.0.norm2.bias	(256,)	256
-hand_decoder.layers.0.linear1.weight	(1024, 256)	262144
-hand_decoder.layers.0.linear1.bias	(1024,)	1024
-hand_decoder.layers.0.linear2.weight	(256, 1024)	262144
-hand_decoder.layers.0.linear2.bias	(256,)	256
-hand_decoder.layers.0.norm3.weight	(256,)	256
-hand_decoder.layers.0.norm3.bias	(256,)	256
-hand_decoder.layers.1.self_attn.in_proj_weight	(768, 256)	196608
-hand_decoder.layers.1.self_attn.in_proj_bias	(768,)	768
-hand_decoder.layers.1.self_attn.out_proj.weight	(256, 256)	65536
-hand_decoder.layers.1.self_attn.out_proj.bias	(256,)	256
-hand_decoder.layers.1.norm1.weight	(256,)	256
-hand_decoder.layers.1.norm1.bias	(256,)	256
-hand_decoder.layers.1.cross_attn.sampling_offsets.weight	(192, 256)	49152
-hand_decoder.layers.1.cross_attn.sampling_offsets.bias	(192,)	192
-hand_decoder.layers.1.cross_attn.attention_weights.weight	(96, 256)	24576
-hand_decoder.layers.1.cross_attn.attention_weights.bias	(96,)	96
-hand_decoder.layers.1.cross_attn.value_proj.weight	(256, 256)	65536
-hand_decoder.layers.1.cross_attn.value_proj.bias	(256,)	256
-hand_decoder.layers.1.cross_attn.output_proj.weight	(256, 256)	65536
-hand_decoder.layers.1.cross_attn.output_proj.bias	(256,)	256
-hand_decoder.layers.1.norm2.weight	(256,)	256
-hand_decoder.layers.1.norm2.bias	(256,)	256
-hand_decoder.layers.1.linear1.weight	(1024, 256)	262144
-hand_decoder.layers.1.linear1.bias	(1024,)	1024
-hand_decoder.layers.1.linear2.weight	(256, 1024)	262144
-hand_decoder.layers.1.linear2.bias	(256,)	256
-hand_decoder.layers.1.norm3.weight	(256,)	256
-hand_decoder.layers.1.norm3.bias	(256,)	256
-hand_decoder.layers.2.self_attn.in_proj_weight	(768, 256)	196608
-hand_decoder.layers.2.self_attn.in_proj_bias	(768,)	768
-hand_decoder.layers.2.self_attn.out_proj.weight	(256, 256)	65536
-hand_decoder.layers.2.self_attn.out_proj.bias	(256,)	256
-hand_decoder.layers.2.norm1.weight	(256,)	256
-hand_decoder.layers.2.norm1.bias	(256,)	256
-hand_decoder.layers.2.cross_attn.sampling_offsets.weight	(192, 256)	49152
-hand_decoder.layers.2.cross_attn.sampling_offsets.bias	(192,)	192
-hand_decoder.layers.2.cross_attn.attention_weights.weight	(96, 256)	24576
-hand_decoder.layers.2.cross_attn.attention_weights.bias	(96,)	96
-hand_decoder.layers.2.cross_attn.value_proj.weight	(256, 256)	65536
-hand_decoder.layers.2.cross_attn.value_proj.bias	(256,)	256
-hand_decoder.layers.2.cross_attn.output_proj.weight	(256, 256)	65536
-hand_decoder.layers.2.cross_attn.output_proj.bias	(256,)	256
-hand_decoder.layers.2.norm2.weight	(256,)	256
-hand_decoder.layers.2.norm2.bias	(256,)	256
-hand_decoder.layers.2.linear1.weight	(1024, 256)	262144
-hand_decoder.layers.2.linear1.bias	(1024,)	1024
-hand_decoder.layers.2.linear2.weight	(256, 1024)	262144
-hand_decoder.layers.2.linear2.bias	(256,)	256
-hand_decoder.layers.2.norm3.weight	(256,)	256
-hand_decoder.layers.2.norm3.bias	(256,)	256
-hand_decoder.layers.3.self_attn.in_proj_weight	(768, 256)	196608
-hand_decoder.layers.3.self_attn.in_proj_bias	(768,)	768
-hand_decoder.layers.3.self_attn.out_proj.weight	(256, 256)	65536
-hand_decoder.layers.3.self_attn.out_proj.bias	(256,)	256
-hand_decoder.layers.3.norm1.weight	(256,)	256
-hand_decoder.layers.3.norm1.bias	(256,)	256
-hand_decoder.layers.3.cross_attn.sampling_offsets.weight	(192, 256)	49152
-hand_decoder.layers.3.cross_attn.sampling_offsets.bias	(192,)	192
-hand_decoder.layers.3.cross_attn.attention_weights.weight	(96, 256)	24576
-hand_decoder.layers.3.cross_attn.attention_weights.bias	(96,)	96
-hand_decoder.layers.3.cross_attn.value_proj.weight	(256, 256)	65536
-hand_decoder.layers.3.cross_attn.value_proj.bias	(256,)	256
-hand_decoder.layers.3.cross_attn.output_proj.weight	(256, 256)	65536
-hand_decoder.layers.3.cross_attn.output_proj.bias	(256,)	256
-hand_decoder.layers.3.norm2.weight	(256,)	256
-hand_decoder.layers.3.norm2.bias	(256,)	256
-hand_decoder.layers.3.linear1.weight	(1024, 256)	262144
-hand_decoder.layers.3.linear1.bias	(1024,)	1024
-hand_decoder.layers.3.linear2.weight	(256, 1024)	262144
-hand_decoder.layers.3.linear2.bias	(256,)	256
-hand_decoder.layers.3.norm3.weight	(256,)	256
-hand_decoder.layers.3.norm3.bias	(256,)	256
-hand_decoder.layers.4.self_attn.in_proj_weight	(768, 256)	196608
-hand_decoder.layers.4.self_attn.in_proj_bias	(768,)	768
-hand_decoder.layers.4.self_attn.out_proj.weight	(256, 256)	65536
-hand_decoder.layers.4.self_attn.out_proj.bias	(256,)	256
-hand_decoder.layers.4.norm1.weight	(256,)	256
-hand_decoder.layers.4.norm1.bias	(256,)	256
-hand_decoder.layers.4.cross_attn.sampling_offsets.weight	(192, 256)	49152
-hand_decoder.layers.4.cross_attn.sampling_offsets.bias	(192,)	192
-hand_decoder.layers.4.cross_attn.attention_weights.weight	(96, 256)	24576
-hand_decoder.layers.4.cross_attn.attention_weights.bias	(96,)	96
-hand_decoder.layers.4.cross_attn.value_proj.weight	(256, 256)	65536
-hand_decoder.layers.4.cross_attn.value_proj.bias	(256,)	256
-hand_decoder.layers.4.cross_attn.output_proj.weight	(256, 256)	65536
-hand_decoder.layers.4.cross_attn.output_proj.bias	(256,)	256
-hand_decoder.layers.4.norm2.weight	(256,)	256
-hand_decoder.layers.4.norm2.bias	(256,)	256
-hand_decoder.layers.4.linear1.weight	(1024, 256)	262144
-hand_decoder.layers.4.linear1.bias	(1024,)	1024
-hand_decoder.layers.4.linear2.weight	(256, 1024)	262144
-hand_decoder.layers.4.linear2.bias	(256,)	256
-hand_decoder.layers.4.norm3.weight	(256,)	256
-hand_decoder.layers.4.norm3.bias	(256,)	256
-hand_decoder.layers.5.self_attn.in_proj_weight	(768, 256)	196608
-hand_decoder.layers.5.self_attn.in_proj_bias	(768,)	768
-hand_decoder.layers.5.self_attn.out_proj.weight	(256, 256)	65536
-hand_decoder.layers.5.self_attn.out_proj.bias	(256,)	256
-hand_decoder.layers.5.norm1.weight	(256,)	256
-hand_decoder.layers.5.norm1.bias	(256,)	256
-hand_decoder.layers.5.cross_attn.sampling_offsets.weight	(192, 256)	49152
-hand_decoder.layers.5.cross_attn.sampling_offsets.bias	(192,)	192
-hand_decoder.layers.5.cross_attn.attention_weights.weight	(96, 256)	24576
-hand_decoder.layers.5.cross_attn.attention_weights.bias	(96,)	96
-hand_decoder.layers.5.cross_attn.value_proj.weight	(256, 256)	65536
-hand_decoder.layers.5.cross_attn.value_proj.bias	(256,)	256
-hand_decoder.layers.5.cross_attn.output_proj.weight	(256, 256)	65536
-hand_decoder.layers.5.cross_attn.output_proj.bias	(256,)	256
-hand_decoder.layers.5.norm2.weight	(256,)	256
-hand_decoder.layers.5.norm2.bias	(256,)	256
-hand_decoder.layers.5.linear1.weight	(1024, 256)	262144
-hand_decoder.layers.5.linear1.bias	(1024,)	1024
-hand_decoder.layers.5.linear2.weight	(256, 1024)	262144
-hand_decoder.layers.5.linear2.bias	(256,)	256
-hand_decoder.layers.5.norm3.weight	(256,)	256
-hand_decoder.layers.5.norm3.bias	(256,)	256
-hand_decoder.query_embed.weight	(20, 512)	10240
+hand_decoder.level_embed	(3, 256)	768
 hand_decoder.input_proj.0.0.weight	(256, 256, 1, 1)	65536
 hand_decoder.input_proj.0.0.bias	(256,)	256
 hand_decoder.input_proj.0.1.weight	(256,)	256
@@ -489,42 +401,105 @@ hand_decoder.input_proj.2.0.weight	(256, 1024, 1, 1)	262144
 hand_decoder.input_proj.2.0.bias	(256,)	256
 hand_decoder.input_proj.2.1.weight	(256,)	256
 hand_decoder.input_proj.2.1.bias	(256,)	256
-hand_decoder.bbox_embed.0.0.weight	(256, 256)	65536
-hand_decoder.bbox_embed.0.0.bias	(256,)	256
-hand_decoder.bbox_embed.0.2.weight	(256, 256)	65536
-hand_decoder.bbox_embed.0.2.bias	(256,)	256
-hand_decoder.bbox_embed.0.4.weight	(2, 256)	512
-hand_decoder.bbox_embed.0.4.bias	(2,)	2
-hand_decoder.bbox_embed.1.0.weight	(256, 256)	65536
-hand_decoder.bbox_embed.1.0.bias	(256,)	256
-hand_decoder.bbox_embed.1.2.weight	(256, 256)	65536
-hand_decoder.bbox_embed.1.2.bias	(256,)	256
-hand_decoder.bbox_embed.1.4.weight	(2, 256)	512
-hand_decoder.bbox_embed.1.4.bias	(2,)	2
-hand_decoder.bbox_embed.2.0.weight	(256, 256)	65536
-hand_decoder.bbox_embed.2.0.bias	(256,)	256
-hand_decoder.bbox_embed.2.2.weight	(256, 256)	65536
-hand_decoder.bbox_embed.2.2.bias	(256,)	256
-hand_decoder.bbox_embed.2.4.weight	(2, 256)	512
-hand_decoder.bbox_embed.2.4.bias	(2,)	2
-hand_decoder.bbox_embed.3.0.weight	(256, 256)	65536
-hand_decoder.bbox_embed.3.0.bias	(256,)	256
-hand_decoder.bbox_embed.3.2.weight	(256, 256)	65536
-hand_decoder.bbox_embed.3.2.bias	(256,)	256
-hand_decoder.bbox_embed.3.4.weight	(2, 256)	512
-hand_decoder.bbox_embed.3.4.bias	(2,)	2
-hand_decoder.bbox_embed.4.0.weight	(256, 256)	65536
-hand_decoder.bbox_embed.4.0.bias	(256,)	256
-hand_decoder.bbox_embed.4.2.weight	(256, 256)	65536
-hand_decoder.bbox_embed.4.2.bias	(256,)	256
-hand_decoder.bbox_embed.4.4.weight	(2, 256)	512
-hand_decoder.bbox_embed.4.4.bias	(2,)	2
-hand_decoder.bbox_embed.5.0.weight	(256, 256)	65536
-hand_decoder.bbox_embed.5.0.bias	(256,)	256
-hand_decoder.bbox_embed.5.2.weight	(256, 256)	65536
-hand_decoder.bbox_embed.5.2.bias	(256,)	256
-hand_decoder.bbox_embed.5.4.weight	(2, 256)	512
-hand_decoder.bbox_embed.5.4.bias	(2,)	2
+hand_decoder.layers.0.topo_attn.topo_scale	(8, 1, 1)	8
+hand_decoder.layers.0.topo_attn.attn.in_proj_weight	(768, 256)	196608
+hand_decoder.layers.0.topo_attn.attn.in_proj_bias	(768,)	768
+hand_decoder.layers.0.topo_attn.attn.out_proj.weight	(256, 256)	65536
+hand_decoder.layers.0.topo_attn.attn.out_proj.bias	(256,)	256
+hand_decoder.layers.0.topo_attn.norm.weight	(256,)	256
+hand_decoder.layers.0.topo_attn.norm.bias	(256,)	256
+hand_decoder.layers.0.occlusion.confidence_head.0.weight	(64, 256)	16384
+hand_decoder.layers.0.occlusion.confidence_head.0.bias	(64,)	64
+hand_decoder.layers.0.occlusion.confidence_head.2.weight	(1, 64)	64
+hand_decoder.layers.0.occlusion.confidence_head.2.bias	(1,)	1
+hand_decoder.layers.0.occlusion.self_attn.in_proj_weight	(768, 256)	196608
+hand_decoder.layers.0.occlusion.self_attn.in_proj_bias	(768,)	768
+hand_decoder.layers.0.occlusion.self_attn.out_proj.weight	(256, 256)	65536
+hand_decoder.layers.0.occlusion.self_attn.out_proj.bias	(256,)	256
+hand_decoder.layers.0.occlusion.norm.weight	(256,)	256
+hand_decoder.layers.0.occlusion.norm.bias	(256,)	256
+hand_decoder.layers.0.cross_attn.sampling_offsets.weight	(192, 256)	49152
+hand_decoder.layers.0.cross_attn.sampling_offsets.bias	(192,)	192
+hand_decoder.layers.0.cross_attn.attention_weights.weight	(96, 256)	24576
+hand_decoder.layers.0.cross_attn.attention_weights.bias	(96,)	96
+hand_decoder.layers.0.cross_attn.value_proj.weight	(256, 256)	65536
+hand_decoder.layers.0.cross_attn.value_proj.bias	(256,)	256
+hand_decoder.layers.0.cross_attn.output_proj.weight	(256, 256)	65536
+hand_decoder.layers.0.cross_attn.output_proj.bias	(256,)	256
+hand_decoder.layers.0.cross_norm.weight	(256,)	256
+hand_decoder.layers.0.cross_norm.bias	(256,)	256
+hand_decoder.layers.0.ffn.0.weight	(1024, 256)	262144
+hand_decoder.layers.0.ffn.0.bias	(1024,)	1024
+hand_decoder.layers.0.ffn.3.weight	(256, 1024)	262144
+hand_decoder.layers.0.ffn.3.bias	(256,)	256
+hand_decoder.layers.0.ffn_norm.weight	(256,)	256
+hand_decoder.layers.0.ffn_norm.bias	(256,)	256
+hand_decoder.layers.1.topo_attn.topo_scale	(8, 1, 1)	8
+hand_decoder.layers.1.topo_attn.attn.in_proj_weight	(768, 256)	196608
+hand_decoder.layers.1.topo_attn.attn.in_proj_bias	(768,)	768
+hand_decoder.layers.1.topo_attn.attn.out_proj.weight	(256, 256)	65536
+hand_decoder.layers.1.topo_attn.attn.out_proj.bias	(256,)	256
+hand_decoder.layers.1.topo_attn.norm.weight	(256,)	256
+hand_decoder.layers.1.topo_attn.norm.bias	(256,)	256
+hand_decoder.layers.1.occlusion.confidence_head.0.weight	(64, 256)	16384
+hand_decoder.layers.1.occlusion.confidence_head.0.bias	(64,)	64
+hand_decoder.layers.1.occlusion.confidence_head.2.weight	(1, 64)	64
+hand_decoder.layers.1.occlusion.confidence_head.2.bias	(1,)	1
+hand_decoder.layers.1.occlusion.self_attn.in_proj_weight	(768, 256)	196608
+hand_decoder.layers.1.occlusion.self_attn.in_proj_bias	(768,)	768
+hand_decoder.layers.1.occlusion.self_attn.out_proj.weight	(256, 256)	65536
+hand_decoder.layers.1.occlusion.self_attn.out_proj.bias	(256,)	256
+hand_decoder.layers.1.occlusion.norm.weight	(256,)	256
+hand_decoder.layers.1.occlusion.norm.bias	(256,)	256
+hand_decoder.layers.1.cross_attn.sampling_offsets.weight	(192, 256)	49152
+hand_decoder.layers.1.cross_attn.sampling_offsets.bias	(192,)	192
+hand_decoder.layers.1.cross_attn.attention_weights.weight	(96, 256)	24576
+hand_decoder.layers.1.cross_attn.attention_weights.bias	(96,)	96
+hand_decoder.layers.1.cross_attn.value_proj.weight	(256, 256)	65536
+hand_decoder.layers.1.cross_attn.value_proj.bias	(256,)	256
+hand_decoder.layers.1.cross_attn.output_proj.weight	(256, 256)	65536
+hand_decoder.layers.1.cross_attn.output_proj.bias	(256,)	256
+hand_decoder.layers.1.cross_norm.weight	(256,)	256
+hand_decoder.layers.1.cross_norm.bias	(256,)	256
+hand_decoder.layers.1.ffn.0.weight	(1024, 256)	262144
+hand_decoder.layers.1.ffn.0.bias	(1024,)	1024
+hand_decoder.layers.1.ffn.3.weight	(256, 1024)	262144
+hand_decoder.layers.1.ffn.3.bias	(256,)	256
+hand_decoder.layers.1.ffn_norm.weight	(256,)	256
+hand_decoder.layers.1.ffn_norm.bias	(256,)	256
+hand_decoder.layers.2.topo_attn.topo_scale	(8, 1, 1)	8
+hand_decoder.layers.2.topo_attn.attn.in_proj_weight	(768, 256)	196608
+hand_decoder.layers.2.topo_attn.attn.in_proj_bias	(768,)	768
+hand_decoder.layers.2.topo_attn.attn.out_proj.weight	(256, 256)	65536
+hand_decoder.layers.2.topo_attn.attn.out_proj.bias	(256,)	256
+hand_decoder.layers.2.topo_attn.norm.weight	(256,)	256
+hand_decoder.layers.2.topo_attn.norm.bias	(256,)	256
+hand_decoder.layers.2.occlusion.confidence_head.0.weight	(64, 256)	16384
+hand_decoder.layers.2.occlusion.confidence_head.0.bias	(64,)	64
+hand_decoder.layers.2.occlusion.confidence_head.2.weight	(1, 64)	64
+hand_decoder.layers.2.occlusion.confidence_head.2.bias	(1,)	1
+hand_decoder.layers.2.occlusion.self_attn.in_proj_weight	(768, 256)	196608
+hand_decoder.layers.2.occlusion.self_attn.in_proj_bias	(768,)	768
+hand_decoder.layers.2.occlusion.self_attn.out_proj.weight	(256, 256)	65536
+hand_decoder.layers.2.occlusion.self_attn.out_proj.bias	(256,)	256
+hand_decoder.layers.2.occlusion.norm.weight	(256,)	256
+hand_decoder.layers.2.occlusion.norm.bias	(256,)	256
+hand_decoder.layers.2.cross_attn.sampling_offsets.weight	(192, 256)	49152
+hand_decoder.layers.2.cross_attn.sampling_offsets.bias	(192,)	192
+hand_decoder.layers.2.cross_attn.attention_weights.weight	(96, 256)	24576
+hand_decoder.layers.2.cross_attn.attention_weights.bias	(96,)	96
+hand_decoder.layers.2.cross_attn.value_proj.weight	(256, 256)	65536
+hand_decoder.layers.2.cross_attn.value_proj.bias	(256,)	256
+hand_decoder.layers.2.cross_attn.output_proj.weight	(256, 256)	65536
+hand_decoder.layers.2.cross_attn.output_proj.bias	(256,)	256
+hand_decoder.layers.2.cross_norm.weight	(256,)	256
+hand_decoder.layers.2.cross_norm.bias	(256,)	256
+hand_decoder.layers.2.ffn.0.weight	(1024, 256)	262144
+hand_decoder.layers.2.ffn.0.bias	(1024,)	1024
+hand_decoder.layers.2.ffn.3.weight	(256, 1024)	262144
+hand_decoder.layers.2.ffn.3.bias	(256,)	256
+hand_decoder.layers.2.ffn_norm.weight	(256,)	256
+hand_decoder.layers.2.ffn_norm.bias	(256,)	256
 hand_regressor.hand_conv.0.weight	(512, 256)	131072
 hand_regressor.hand_conv.0.bias	(512,)	512
 hand_regressor.hand_pose_out.0.weight	(90, 10300)	927000
@@ -540,145 +515,57 @@ face_roi_net.deconv.2.1.bias	(512,)	512
 face_roi_net.deconv.2.3.weight	(512, 256, 4, 4)	2097152
 face_roi_net.deconv.2.4.weight	(256,)	256
 face_roi_net.deconv.2.4.bias	(256,)	256
+face_position_net.dcnv4_blocks.0.norm1.weight	(512,)	512
+face_position_net.dcnv4_blocks.0.norm1.bias	(512,)	512
+face_position_net.dcnv4_blocks.0.dcnv4.offset_mask.weight	(112, 512)	57344
+face_position_net.dcnv4_blocks.0.dcnv4.offset_mask.bias	(112,)	112
+face_position_net.dcnv4_blocks.0.dcnv4.value_proj.weight	(512, 512)	262144
+face_position_net.dcnv4_blocks.0.dcnv4.value_proj.bias	(512,)	512
+face_position_net.dcnv4_blocks.0.dcnv4.output_proj.weight	(512, 512)	262144
+face_position_net.dcnv4_blocks.0.dcnv4.output_proj.bias	(512,)	512
+face_position_net.dcnv4_blocks.0.norm2.weight	(512,)	512
+face_position_net.dcnv4_blocks.0.norm2.bias	(512,)	512
+face_position_net.dcnv4_blocks.0.ffn.0.weight	(2048, 512)	1048576
+face_position_net.dcnv4_blocks.0.ffn.0.bias	(2048,)	2048
+face_position_net.dcnv4_blocks.0.ffn.2.weight	(512, 2048)	1048576
+face_position_net.dcnv4_blocks.0.ffn.2.bias	(512,)	512
+face_position_net.dcnv4_blocks.1.norm1.weight	(512,)	512
+face_position_net.dcnv4_blocks.1.norm1.bias	(512,)	512
+face_position_net.dcnv4_blocks.1.dcnv4.offset_mask.weight	(112, 512)	57344
+face_position_net.dcnv4_blocks.1.dcnv4.offset_mask.bias	(112,)	112
+face_position_net.dcnv4_blocks.1.dcnv4.value_proj.weight	(512, 512)	262144
+face_position_net.dcnv4_blocks.1.dcnv4.value_proj.bias	(512,)	512
+face_position_net.dcnv4_blocks.1.dcnv4.output_proj.weight	(512, 512)	262144
+face_position_net.dcnv4_blocks.1.dcnv4.output_proj.bias	(512,)	512
+face_position_net.dcnv4_blocks.1.norm2.weight	(512,)	512
+face_position_net.dcnv4_blocks.1.norm2.bias	(512,)	512
+face_position_net.dcnv4_blocks.1.ffn.0.weight	(2048, 512)	1048576
+face_position_net.dcnv4_blocks.1.ffn.0.bias	(2048,)	2048
+face_position_net.dcnv4_blocks.1.ffn.2.weight	(512, 2048)	1048576
+face_position_net.dcnv4_blocks.1.ffn.2.bias	(512,)	512
+face_position_net.dcnv4_blocks.2.norm1.weight	(512,)	512
+face_position_net.dcnv4_blocks.2.norm1.bias	(512,)	512
+face_position_net.dcnv4_blocks.2.dcnv4.offset_mask.weight	(112, 512)	57344
+face_position_net.dcnv4_blocks.2.dcnv4.offset_mask.bias	(112,)	112
+face_position_net.dcnv4_blocks.2.dcnv4.value_proj.weight	(512, 512)	262144
+face_position_net.dcnv4_blocks.2.dcnv4.value_proj.bias	(512,)	512
+face_position_net.dcnv4_blocks.2.dcnv4.output_proj.weight	(512, 512)	262144
+face_position_net.dcnv4_blocks.2.dcnv4.output_proj.bias	(512,)	512
+face_position_net.dcnv4_blocks.2.norm2.weight	(512,)	512
+face_position_net.dcnv4_blocks.2.norm2.bias	(512,)	512
+face_position_net.dcnv4_blocks.2.ffn.0.weight	(2048, 512)	1048576
+face_position_net.dcnv4_blocks.2.ffn.0.bias	(2048,)	2048
+face_position_net.dcnv4_blocks.2.ffn.2.weight	(512, 2048)	1048576
+face_position_net.dcnv4_blocks.2.ffn.2.bias	(512,)	512
+face_position_net.final_norm.weight	(512,)	512
+face_position_net.final_norm.bias	(512,)	512
+face_position_net.conv.0.weight	(576, 512, 1, 1)	294912
+face_position_net.conv.0.bias	(576,)	576
 face_position_net.face_conv.0.weight	(256, 512, 1, 1)	131072
 face_position_net.face_conv.0.bias	(256,)	256
 face_position_net.face_conv.1.weight	(256,)	256
 face_position_net.face_conv.1.bias	(256,)	256
-face_position_net.conv.0.weight	(576, 512, 1, 1)	294912
-face_position_net.conv.0.bias	(576,)	576
-face_decoder.layers.0.self_attn.in_proj_weight	(768, 256)	196608
-face_decoder.layers.0.self_attn.in_proj_bias	(768,)	768
-face_decoder.layers.0.self_attn.out_proj.weight	(256, 256)	65536
-face_decoder.layers.0.self_attn.out_proj.bias	(256,)	256
-face_decoder.layers.0.norm1.weight	(256,)	256
-face_decoder.layers.0.norm1.bias	(256,)	256
-face_decoder.layers.0.cross_attn.sampling_offsets.weight	(192, 256)	49152
-face_decoder.layers.0.cross_attn.sampling_offsets.bias	(192,)	192
-face_decoder.layers.0.cross_attn.attention_weights.weight	(96, 256)	24576
-face_decoder.layers.0.cross_attn.attention_weights.bias	(96,)	96
-face_decoder.layers.0.cross_attn.value_proj.weight	(256, 256)	65536
-face_decoder.layers.0.cross_attn.value_proj.bias	(256,)	256
-face_decoder.layers.0.cross_attn.output_proj.weight	(256, 256)	65536
-face_decoder.layers.0.cross_attn.output_proj.bias	(256,)	256
-face_decoder.layers.0.norm2.weight	(256,)	256
-face_decoder.layers.0.norm2.bias	(256,)	256
-face_decoder.layers.0.linear1.weight	(1024, 256)	262144
-face_decoder.layers.0.linear1.bias	(1024,)	1024
-face_decoder.layers.0.linear2.weight	(256, 1024)	262144
-face_decoder.layers.0.linear2.bias	(256,)	256
-face_decoder.layers.0.norm3.weight	(256,)	256
-face_decoder.layers.0.norm3.bias	(256,)	256
-face_decoder.layers.1.self_attn.in_proj_weight	(768, 256)	196608
-face_decoder.layers.1.self_attn.in_proj_bias	(768,)	768
-face_decoder.layers.1.self_attn.out_proj.weight	(256, 256)	65536
-face_decoder.layers.1.self_attn.out_proj.bias	(256,)	256
-face_decoder.layers.1.norm1.weight	(256,)	256
-face_decoder.layers.1.norm1.bias	(256,)	256
-face_decoder.layers.1.cross_attn.sampling_offsets.weight	(192, 256)	49152
-face_decoder.layers.1.cross_attn.sampling_offsets.bias	(192,)	192
-face_decoder.layers.1.cross_attn.attention_weights.weight	(96, 256)	24576
-face_decoder.layers.1.cross_attn.attention_weights.bias	(96,)	96
-face_decoder.layers.1.cross_attn.value_proj.weight	(256, 256)	65536
-face_decoder.layers.1.cross_attn.value_proj.bias	(256,)	256
-face_decoder.layers.1.cross_attn.output_proj.weight	(256, 256)	65536
-face_decoder.layers.1.cross_attn.output_proj.bias	(256,)	256
-face_decoder.layers.1.norm2.weight	(256,)	256
-face_decoder.layers.1.norm2.bias	(256,)	256
-face_decoder.layers.1.linear1.weight	(1024, 256)	262144
-face_decoder.layers.1.linear1.bias	(1024,)	1024
-face_decoder.layers.1.linear2.weight	(256, 1024)	262144
-face_decoder.layers.1.linear2.bias	(256,)	256
-face_decoder.layers.1.norm3.weight	(256,)	256
-face_decoder.layers.1.norm3.bias	(256,)	256
-face_decoder.layers.2.self_attn.in_proj_weight	(768, 256)	196608
-face_decoder.layers.2.self_attn.in_proj_bias	(768,)	768
-face_decoder.layers.2.self_attn.out_proj.weight	(256, 256)	65536
-face_decoder.layers.2.self_attn.out_proj.bias	(256,)	256
-face_decoder.layers.2.norm1.weight	(256,)	256
-face_decoder.layers.2.norm1.bias	(256,)	256
-face_decoder.layers.2.cross_attn.sampling_offsets.weight	(192, 256)	49152
-face_decoder.layers.2.cross_attn.sampling_offsets.bias	(192,)	192
-face_decoder.layers.2.cross_attn.attention_weights.weight	(96, 256)	24576
-face_decoder.layers.2.cross_attn.attention_weights.bias	(96,)	96
-face_decoder.layers.2.cross_attn.value_proj.weight	(256, 256)	65536
-face_decoder.layers.2.cross_attn.value_proj.bias	(256,)	256
-face_decoder.layers.2.cross_attn.output_proj.weight	(256, 256)	65536
-face_decoder.layers.2.cross_attn.output_proj.bias	(256,)	256
-face_decoder.layers.2.norm2.weight	(256,)	256
-face_decoder.layers.2.norm2.bias	(256,)	256
-face_decoder.layers.2.linear1.weight	(1024, 256)	262144
-face_decoder.layers.2.linear1.bias	(1024,)	1024
-face_decoder.layers.2.linear2.weight	(256, 1024)	262144
-face_decoder.layers.2.linear2.bias	(256,)	256
-face_decoder.layers.2.norm3.weight	(256,)	256
-face_decoder.layers.2.norm3.bias	(256,)	256
-face_decoder.layers.3.self_attn.in_proj_weight	(768, 256)	196608
-face_decoder.layers.3.self_attn.in_proj_bias	(768,)	768
-face_decoder.layers.3.self_attn.out_proj.weight	(256, 256)	65536
-face_decoder.layers.3.self_attn.out_proj.bias	(256,)	256
-face_decoder.layers.3.norm1.weight	(256,)	256
-face_decoder.layers.3.norm1.bias	(256,)	256
-face_decoder.layers.3.cross_attn.sampling_offsets.weight	(192, 256)	49152
-face_decoder.layers.3.cross_attn.sampling_offsets.bias	(192,)	192
-face_decoder.layers.3.cross_attn.attention_weights.weight	(96, 256)	24576
-face_decoder.layers.3.cross_attn.attention_weights.bias	(96,)	96
-face_decoder.layers.3.cross_attn.value_proj.weight	(256, 256)	65536
-face_decoder.layers.3.cross_attn.value_proj.bias	(256,)	256
-face_decoder.layers.3.cross_attn.output_proj.weight	(256, 256)	65536
-face_decoder.layers.3.cross_attn.output_proj.bias	(256,)	256
-face_decoder.layers.3.norm2.weight	(256,)	256
-face_decoder.layers.3.norm2.bias	(256,)	256
-face_decoder.layers.3.linear1.weight	(1024, 256)	262144
-face_decoder.layers.3.linear1.bias	(1024,)	1024
-face_decoder.layers.3.linear2.weight	(256, 1024)	262144
-face_decoder.layers.3.linear2.bias	(256,)	256
-face_decoder.layers.3.norm3.weight	(256,)	256
-face_decoder.layers.3.norm3.bias	(256,)	256
-face_decoder.layers.4.self_attn.in_proj_weight	(768, 256)	196608
-face_decoder.layers.4.self_attn.in_proj_bias	(768,)	768
-face_decoder.layers.4.self_attn.out_proj.weight	(256, 256)	65536
-face_decoder.layers.4.self_attn.out_proj.bias	(256,)	256
-face_decoder.layers.4.norm1.weight	(256,)	256
-face_decoder.layers.4.norm1.bias	(256,)	256
-face_decoder.layers.4.cross_attn.sampling_offsets.weight	(192, 256)	49152
-face_decoder.layers.4.cross_attn.sampling_offsets.bias	(192,)	192
-face_decoder.layers.4.cross_attn.attention_weights.weight	(96, 256)	24576
-face_decoder.layers.4.cross_attn.attention_weights.bias	(96,)	96
-face_decoder.layers.4.cross_attn.value_proj.weight	(256, 256)	65536
-face_decoder.layers.4.cross_attn.value_proj.bias	(256,)	256
-face_decoder.layers.4.cross_attn.output_proj.weight	(256, 256)	65536
-face_decoder.layers.4.cross_attn.output_proj.bias	(256,)	256
-face_decoder.layers.4.norm2.weight	(256,)	256
-face_decoder.layers.4.norm2.bias	(256,)	256
-face_decoder.layers.4.linear1.weight	(1024, 256)	262144
-face_decoder.layers.4.linear1.bias	(1024,)	1024
-face_decoder.layers.4.linear2.weight	(256, 1024)	262144
-face_decoder.layers.4.linear2.bias	(256,)	256
-face_decoder.layers.4.norm3.weight	(256,)	256
-face_decoder.layers.4.norm3.bias	(256,)	256
-face_decoder.layers.5.self_attn.in_proj_weight	(768, 256)	196608
-face_decoder.layers.5.self_attn.in_proj_bias	(768,)	768
-face_decoder.layers.5.self_attn.out_proj.weight	(256, 256)	65536
-face_decoder.layers.5.self_attn.out_proj.bias	(256,)	256
-face_decoder.layers.5.norm1.weight	(256,)	256
-face_decoder.layers.5.norm1.bias	(256,)	256
-face_decoder.layers.5.cross_attn.sampling_offsets.weight	(192, 256)	49152
-face_decoder.layers.5.cross_attn.sampling_offsets.bias	(192,)	192
-face_decoder.layers.5.cross_attn.attention_weights.weight	(96, 256)	24576
-face_decoder.layers.5.cross_attn.attention_weights.bias	(96,)	96
-face_decoder.layers.5.cross_attn.value_proj.weight	(256, 256)	65536
-face_decoder.layers.5.cross_attn.value_proj.bias	(256,)	256
-face_decoder.layers.5.cross_attn.output_proj.weight	(256, 256)	65536
-face_decoder.layers.5.cross_attn.output_proj.bias	(256,)	256
-face_decoder.layers.5.norm2.weight	(256,)	256
-face_decoder.layers.5.norm2.bias	(256,)	256
-face_decoder.layers.5.linear1.weight	(1024, 256)	262144
-face_decoder.layers.5.linear1.bias	(1024,)	1024
-face_decoder.layers.5.linear2.weight	(256, 1024)	262144
-face_decoder.layers.5.linear2.bias	(256,)	256
-face_decoder.layers.5.norm3.weight	(256,)	256
-face_decoder.layers.5.norm3.bias	(256,)	256
-face_decoder.query_embed.weight	(72, 512)	36864
+face_decoder.level_embed	(3, 256)	768
 face_decoder.input_proj.0.0.weight	(256, 256, 1, 1)	65536
 face_decoder.input_proj.0.0.bias	(256,)	256
 face_decoder.input_proj.0.1.weight	(256,)	256
@@ -691,42 +578,231 @@ face_decoder.input_proj.2.0.weight	(256, 1024, 1, 1)	262144
 face_decoder.input_proj.2.0.bias	(256,)	256
 face_decoder.input_proj.2.1.weight	(256,)	256
 face_decoder.input_proj.2.1.bias	(256,)	256
-face_decoder.bbox_embed.0.0.weight	(256, 256)	65536
-face_decoder.bbox_embed.0.0.bias	(256,)	256
-face_decoder.bbox_embed.0.2.weight	(256, 256)	65536
-face_decoder.bbox_embed.0.2.bias	(256,)	256
-face_decoder.bbox_embed.0.4.weight	(2, 256)	512
-face_decoder.bbox_embed.0.4.bias	(2,)	2
-face_decoder.bbox_embed.1.0.weight	(256, 256)	65536
-face_decoder.bbox_embed.1.0.bias	(256,)	256
-face_decoder.bbox_embed.1.2.weight	(256, 256)	65536
-face_decoder.bbox_embed.1.2.bias	(256,)	256
-face_decoder.bbox_embed.1.4.weight	(2, 256)	512
-face_decoder.bbox_embed.1.4.bias	(2,)	2
-face_decoder.bbox_embed.2.0.weight	(256, 256)	65536
-face_decoder.bbox_embed.2.0.bias	(256,)	256
-face_decoder.bbox_embed.2.2.weight	(256, 256)	65536
-face_decoder.bbox_embed.2.2.bias	(256,)	256
-face_decoder.bbox_embed.2.4.weight	(2, 256)	512
-face_decoder.bbox_embed.2.4.bias	(2,)	2
-face_decoder.bbox_embed.3.0.weight	(256, 256)	65536
-face_decoder.bbox_embed.3.0.bias	(256,)	256
-face_decoder.bbox_embed.3.2.weight	(256, 256)	65536
-face_decoder.bbox_embed.3.2.bias	(256,)	256
-face_decoder.bbox_embed.3.4.weight	(2, 256)	512
-face_decoder.bbox_embed.3.4.bias	(2,)	2
-face_decoder.bbox_embed.4.0.weight	(256, 256)	65536
-face_decoder.bbox_embed.4.0.bias	(256,)	256
-face_decoder.bbox_embed.4.2.weight	(256, 256)	65536
-face_decoder.bbox_embed.4.2.bias	(256,)	256
-face_decoder.bbox_embed.4.4.weight	(2, 256)	512
-face_decoder.bbox_embed.4.4.bias	(2,)	2
-face_decoder.bbox_embed.5.0.weight	(256, 256)	65536
-face_decoder.bbox_embed.5.0.bias	(256,)	256
-face_decoder.bbox_embed.5.2.weight	(256, 256)	65536
-face_decoder.bbox_embed.5.2.bias	(256,)	256
-face_decoder.bbox_embed.5.4.weight	(2, 256)	512
-face_decoder.bbox_embed.5.4.bias	(2,)	2
+face_decoder.layers.0.region_attn.region_attns.jaw.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.jaw.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.jaw.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.jaw.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_attns.left_brow.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.left_brow.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.left_brow.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.left_brow.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_attns.right_brow.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.right_brow.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.right_brow.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.right_brow.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_attns.nose.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.nose.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.nose.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.nose.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_attns.left_eye.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.left_eye.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.left_eye.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.left_eye.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_attns.right_eye.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.right_eye.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.right_eye.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.right_eye.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_attns.mouth.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.mouth.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.mouth.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.mouth.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_attns.other.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.region_attns.other.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.region_attns.other.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.region_attns.other.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.cross_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.region_attn.cross_attn.in_proj_bias	(768,)	768
+face_decoder.layers.0.region_attn.cross_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.region_attn.cross_attn.out_proj.bias	(256,)	256
+face_decoder.layers.0.region_attn.region_embed.jaw	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.region_embed.left_brow	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.region_embed.left_eye	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.region_embed.mouth	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.region_embed.nose	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.region_embed.other	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.region_embed.right_brow	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.region_embed.right_eye	(1, 1, 256)	256
+face_decoder.layers.0.region_attn.norm1.weight	(256,)	256
+face_decoder.layers.0.region_attn.norm1.bias	(256,)	256
+face_decoder.layers.0.region_attn.norm2.weight	(256,)	256
+face_decoder.layers.0.region_attn.norm2.bias	(256,)	256
+face_decoder.layers.0.global_expr.global_query	(1, 1, 256)	256
+face_decoder.layers.0.global_expr.aggregate_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.global_expr.aggregate_attn.in_proj_bias	(768,)	768
+face_decoder.layers.0.global_expr.aggregate_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.global_expr.aggregate_attn.out_proj.bias	(256,)	256
+face_decoder.layers.0.global_expr.distribute_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.0.global_expr.distribute_attn.in_proj_bias	(768,)	768
+face_decoder.layers.0.global_expr.distribute_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.0.global_expr.distribute_attn.out_proj.bias	(256,)	256
+face_decoder.layers.0.global_expr.norm.weight	(256,)	256
+face_decoder.layers.0.global_expr.norm.bias	(256,)	256
+face_decoder.layers.0.cross_attn.sampling_offsets.weight	(192, 256)	49152
+face_decoder.layers.0.cross_attn.sampling_offsets.bias	(192,)	192
+face_decoder.layers.0.cross_attn.attention_weights.weight	(96, 256)	24576
+face_decoder.layers.0.cross_attn.attention_weights.bias	(96,)	96
+face_decoder.layers.0.cross_attn.value_proj.weight	(256, 256)	65536
+face_decoder.layers.0.cross_attn.value_proj.bias	(256,)	256
+face_decoder.layers.0.cross_attn.output_proj.weight	(256, 256)	65536
+face_decoder.layers.0.cross_attn.output_proj.bias	(256,)	256
+face_decoder.layers.0.cross_norm.weight	(256,)	256
+face_decoder.layers.0.cross_norm.bias	(256,)	256
+face_decoder.layers.0.ffn.0.weight	(1024, 256)	262144
+face_decoder.layers.0.ffn.0.bias	(1024,)	1024
+face_decoder.layers.0.ffn.3.weight	(256, 1024)	262144
+face_decoder.layers.0.ffn.3.bias	(256,)	256
+face_decoder.layers.0.ffn_norm.weight	(256,)	256
+face_decoder.layers.0.ffn_norm.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.jaw.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.jaw.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.jaw.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.jaw.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.left_brow.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.left_brow.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.left_brow.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.left_brow.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.right_brow.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.right_brow.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.right_brow.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.right_brow.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.nose.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.nose.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.nose.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.nose.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.left_eye.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.left_eye.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.left_eye.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.left_eye.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.right_eye.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.right_eye.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.right_eye.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.right_eye.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.mouth.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.mouth.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.mouth.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.mouth.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_attns.other.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.region_attns.other.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.region_attns.other.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.region_attns.other.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.cross_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.region_attn.cross_attn.in_proj_bias	(768,)	768
+face_decoder.layers.1.region_attn.cross_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.region_attn.cross_attn.out_proj.bias	(256,)	256
+face_decoder.layers.1.region_attn.region_embed.jaw	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.region_embed.left_brow	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.region_embed.left_eye	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.region_embed.mouth	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.region_embed.nose	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.region_embed.other	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.region_embed.right_brow	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.region_embed.right_eye	(1, 1, 256)	256
+face_decoder.layers.1.region_attn.norm1.weight	(256,)	256
+face_decoder.layers.1.region_attn.norm1.bias	(256,)	256
+face_decoder.layers.1.region_attn.norm2.weight	(256,)	256
+face_decoder.layers.1.region_attn.norm2.bias	(256,)	256
+face_decoder.layers.1.global_expr.global_query	(1, 1, 256)	256
+face_decoder.layers.1.global_expr.aggregate_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.global_expr.aggregate_attn.in_proj_bias	(768,)	768
+face_decoder.layers.1.global_expr.aggregate_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.global_expr.aggregate_attn.out_proj.bias	(256,)	256
+face_decoder.layers.1.global_expr.distribute_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.1.global_expr.distribute_attn.in_proj_bias	(768,)	768
+face_decoder.layers.1.global_expr.distribute_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.1.global_expr.distribute_attn.out_proj.bias	(256,)	256
+face_decoder.layers.1.global_expr.norm.weight	(256,)	256
+face_decoder.layers.1.global_expr.norm.bias	(256,)	256
+face_decoder.layers.1.cross_attn.sampling_offsets.weight	(192, 256)	49152
+face_decoder.layers.1.cross_attn.sampling_offsets.bias	(192,)	192
+face_decoder.layers.1.cross_attn.attention_weights.weight	(96, 256)	24576
+face_decoder.layers.1.cross_attn.attention_weights.bias	(96,)	96
+face_decoder.layers.1.cross_attn.value_proj.weight	(256, 256)	65536
+face_decoder.layers.1.cross_attn.value_proj.bias	(256,)	256
+face_decoder.layers.1.cross_attn.output_proj.weight	(256, 256)	65536
+face_decoder.layers.1.cross_attn.output_proj.bias	(256,)	256
+face_decoder.layers.1.cross_norm.weight	(256,)	256
+face_decoder.layers.1.cross_norm.bias	(256,)	256
+face_decoder.layers.1.ffn.0.weight	(1024, 256)	262144
+face_decoder.layers.1.ffn.0.bias	(1024,)	1024
+face_decoder.layers.1.ffn.3.weight	(256, 1024)	262144
+face_decoder.layers.1.ffn.3.bias	(256,)	256
+face_decoder.layers.1.ffn_norm.weight	(256,)	256
+face_decoder.layers.1.ffn_norm.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.jaw.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.jaw.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.jaw.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.jaw.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.left_brow.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.left_brow.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.left_brow.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.left_brow.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.right_brow.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.right_brow.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.right_brow.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.right_brow.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.nose.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.nose.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.nose.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.nose.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.left_eye.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.left_eye.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.left_eye.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.left_eye.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.right_eye.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.right_eye.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.right_eye.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.right_eye.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.mouth.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.mouth.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.mouth.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.mouth.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_attns.other.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.region_attns.other.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.region_attns.other.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.region_attns.other.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.cross_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.region_attn.cross_attn.in_proj_bias	(768,)	768
+face_decoder.layers.2.region_attn.cross_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.region_attn.cross_attn.out_proj.bias	(256,)	256
+face_decoder.layers.2.region_attn.region_embed.jaw	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.region_embed.left_brow	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.region_embed.left_eye	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.region_embed.mouth	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.region_embed.nose	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.region_embed.other	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.region_embed.right_brow	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.region_embed.right_eye	(1, 1, 256)	256
+face_decoder.layers.2.region_attn.norm1.weight	(256,)	256
+face_decoder.layers.2.region_attn.norm1.bias	(256,)	256
+face_decoder.layers.2.region_attn.norm2.weight	(256,)	256
+face_decoder.layers.2.region_attn.norm2.bias	(256,)	256
+face_decoder.layers.2.global_expr.global_query	(1, 1, 256)	256
+face_decoder.layers.2.global_expr.aggregate_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.global_expr.aggregate_attn.in_proj_bias	(768,)	768
+face_decoder.layers.2.global_expr.aggregate_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.global_expr.aggregate_attn.out_proj.bias	(256,)	256
+face_decoder.layers.2.global_expr.distribute_attn.in_proj_weight	(768, 256)	196608
+face_decoder.layers.2.global_expr.distribute_attn.in_proj_bias	(768,)	768
+face_decoder.layers.2.global_expr.distribute_attn.out_proj.weight	(256, 256)	65536
+face_decoder.layers.2.global_expr.distribute_attn.out_proj.bias	(256,)	256
+face_decoder.layers.2.global_expr.norm.weight	(256,)	256
+face_decoder.layers.2.global_expr.norm.bias	(256,)	256
+face_decoder.layers.2.cross_attn.sampling_offsets.weight	(192, 256)	49152
+face_decoder.layers.2.cross_attn.sampling_offsets.bias	(192,)	192
+face_decoder.layers.2.cross_attn.attention_weights.weight	(96, 256)	24576
+face_decoder.layers.2.cross_attn.attention_weights.bias	(96,)	96
+face_decoder.layers.2.cross_attn.value_proj.weight	(256, 256)	65536
+face_decoder.layers.2.cross_attn.value_proj.bias	(256,)	256
+face_decoder.layers.2.cross_attn.output_proj.weight	(256, 256)	65536
+face_decoder.layers.2.cross_attn.output_proj.bias	(256,)	256
+face_decoder.layers.2.cross_norm.weight	(256,)	256
+face_decoder.layers.2.cross_norm.bias	(256,)	256
+face_decoder.layers.2.ffn.0.weight	(1024, 256)	262144
+face_decoder.layers.2.ffn.0.bias	(1024,)	1024
+face_decoder.layers.2.ffn.3.weight	(256, 1024)	262144
+face_decoder.layers.2.ffn.3.bias	(256,)	256
+face_decoder.layers.2.ffn_norm.weight	(256,)	256
+face_decoder.layers.2.ffn_norm.bias	(256,)	256
 face_regressor.conv.0.weight	(512, 1024)	524288
 face_regressor.conv.0.bias	(512,)	512
 face_regressor.joint_conv.0.weight	(512, 256)	131072
@@ -736,4 +812,4 @@ face_regressor.expr_out.0.bias	(10,)	10
 face_regressor.jaw_pose_out.0.weight	(6, 37592)	225552
 face_regressor.jaw_pose_out.0.bias	(6,)	6
 
-Total params: 371535600
+Total params: 388784467

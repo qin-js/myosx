@@ -291,46 +291,109 @@ class ViT(BaseBackbone):
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token'}
 
-    def forward_features(self, x):
+    def forward_features(self, x, return_intermediate=False, out_indices=(5, 11, 17, 23)):
+        """
+        Args:
+            x: [B, C, H, W]
+            return_intermediate: 是否返回中间层
+            out_indices: 想提取的 block，下标从 0 开始
+
+        Returns:
+            if return_intermediate == False:
+                xp, task_tokens
+            else:
+                xp, task_tokens, intermediates
+
+            xp: [B, C, Hp, Wp]
+            task_tokens: [B, task_tokens_num, C]
+            intermediates: list of dict
+        """
         B, C, H, W = x.shape
         x, (Hp, Wp) = self.patch_embed(x)
+
         task_tokens = repeat(self.task_tokens, '() n d -> b n d', b=B)
+
         if self.pos_embed is not None:
-            # fit for multiple GPU training
-            # since the first element for pos embed (sin-cos manner) is zero, it will cause no difference
             x = x + self.pos_embed[:, 1:] + self.pos_embed[:, :1]
 
         x = torch.cat((task_tokens, x), dim=1)
 
-        show_indexs = [3, 6, 9, 12, 15, 18, 21, 24]
-        i = 0
-        for blk in self.blocks:
-            i += 1
+        intermediates = []
+
+        for i, blk in enumerate(self.blocks):
             if self.use_checkpoint:
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
-                if i in show_indexs:
-                    
-                    xp = x[:, self.task_tokens_num:]  # [N,Hp*Wp,C]
 
-                    xp = xp.permute(0, 2, 1).reshape(B, -1, Hp, Wp).contiguous()
-                    print(i, ": ", xp.shape)
-                    torch.save(xp.detach().cpu(), f'features/f_{i}.pt')
+            if return_intermediate and i in out_indices:
+                patch_tokens = x[:, self.task_tokens_num:]  # [B, Hp*Wp, C]
+                feat = patch_tokens.permute(0, 2, 1).reshape(B, -1, Hp, Wp).contiguous()
+
+                intermediates.append({
+                    'layer_idx': i,               # 0-based
+                    'layer_num': i + 1,           # 1-based
+                    'tokens': x.detach(),
+                    'patch_tokens': patch_tokens.detach(),
+                    'feature_map': feat.detach(), # [B, C, Hp, Wp]
+                    'hw': (Hp, Wp),
+                })
 
         x = self.last_norm(x)
 
-        task_tokens = x[:, :self.task_tokens_num]  # [N,J,C]
-        # task_tokens = torch.cat(task_tokens_, dim=-1)
-        xp = x[:, self.task_tokens_num:]  # [N,Hp*Wp,C]
-
+        task_tokens = x[:, :self.task_tokens_num]
+        xp = x[:, self.task_tokens_num:]
         xp = xp.permute(0, 2, 1).reshape(B, -1, Hp, Wp).contiguous()
 
+        if return_intermediate:
+            return xp, task_tokens, intermediates
         return xp, task_tokens
+    # def forward_features(self, x):
+    #     B, C, H, W = x.shape
+    #     x, (Hp, Wp) = self.patch_embed(x)
+    #     task_tokens = repeat(self.task_tokens, '() n d -> b n d', b=B)
+    #     if self.pos_embed is not None:
+    #         # fit for multiple GPU training
+    #         # since the first element for pos embed (sin-cos manner) is zero, it will cause no difference
+    #         x = x + self.pos_embed[:, 1:] + self.pos_embed[:, :1]
 
-    def forward(self, x):
-        x = self.forward_features(x)
-        return x
+    #     x = torch.cat((task_tokens, x), dim=1)
+
+    #     show_indexs = [3, 6, 9, 12, 15, 18, 21, 24]
+    #     i = 0
+    #     for blk in self.blocks:
+    #         i += 1
+    #         if self.use_checkpoint:
+    #             x = checkpoint.checkpoint(blk, x)
+    #         else:
+    #             x = blk(x)
+    #             if i in show_indexs:
+                    
+    #                 xp = x[:, self.task_tokens_num:]  # [N,Hp*Wp,C]
+
+    #                 xp = xp.permute(0, 2, 1).reshape(B, -1, Hp, Wp).contiguous()
+    #                 # print(i, ": ", xp.shape)
+    #                 torch.save(xp.detach().cpu(), f'features/f_{i}.pt')
+
+    #     x = self.last_norm(x)
+
+    #     task_tokens = x[:, :self.task_tokens_num]  # [N,J,C]
+    #     # task_tokens = torch.cat(task_tokens_, dim=-1)
+    #     xp = x[:, self.task_tokens_num:]  # [N,Hp*Wp,C]
+
+    #     xp = xp.permute(0, 2, 1).reshape(B, -1, Hp, Wp).contiguous()
+
+    #     return xp, task_tokens
+
+    # def forward(self, x):
+    #     x = self.forward_features(x)
+    #     return x
+    def forward(self, x, return_intermediate=False, out_indices=(5, 11, 17, 23)):
+        return self.forward_features(
+            x,
+            return_intermediate=return_intermediate,
+            out_indices=out_indices
+        )
 
     def train(self, mode=True):
         """Convert the model into training mode."""

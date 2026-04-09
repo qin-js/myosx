@@ -3,12 +3,29 @@ import os.path as osp
 import sys
 
 class Config:
+    # vis setting
+    visualization = dict(
+        enable=False,                 # 推理时是否保存ViT中间层可视化
+        save_dir='./vit_vis', # 保存目录
+        layers=[2, 5, 8, 11, 14, 17, 20, 23],  # 0-based, depth=24
+        upsample_mode='bilinear',     # bilinear / nearest
+        single_dpi=240,
+        summary_dpi=220,
+        save_input=True,
+        save_pca=True,
+        save_meanact=True,
+        save_overlay=True,
+        save_attention=True,
+        attention_head_fusion='mean',   # mean / max
+        attention_task_token_indices=[0, 1, 2, 3, 4, 5, 6, 10, 14, 18, 22, 26, 30],  # 看哪些 task token
+        save_attention_per_head=False,  # 是否把每个head单独保存
+    )
 
     # dataset setting
     dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500']
     # trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
     trainset_3d = []; trainset_2d = ['HAA500']; testset = 'EHF'
-    continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_5.pth.tar"
+    continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_3.pth.tar"
 
     ## UBody setting
     train_sample_interval = 10
