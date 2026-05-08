@@ -176,7 +176,7 @@ class HAA500(torch.utils.data.Dataset):
             img = load_img(img_path)
         except (IOError, OSError) as e:
             if self.retry < self.MAX_RETRY:
-                print(f"[HAA500] Warning: Cannot read {img_path}, skip to random sample")
+                # print(f"[HAA500] Warning: Cannot read {img_path}, skip to random sample")
                 new_idx = random.randint(0, len(self) - 1)
                 self.retry += 1
                 return self.__getitem__(new_idx)

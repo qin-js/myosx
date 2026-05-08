@@ -25,7 +25,7 @@ class Config:
     dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500']
     # trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
     trainset_3d = []; trainset_2d = ['HAA500']; testset = 'EHF'
-    continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_3.pth.tar"
+    continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_29.pth.tar"
 
     ## UBody setting
     train_sample_interval = 10
@@ -52,7 +52,7 @@ class Config:
     end_epoch = 14
     train_batch_size = 48
     print_iters = 100
-    lr_mult = 1
+    lr_mult = 0.1
     smplx_loss_weight = 1
     agora_benchmark = False
 

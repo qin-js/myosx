@@ -4,6 +4,9 @@ import torch.backends.cudnn as cudnn
 from config import cfg
 import torch
 
+PHASE1_EPOCHS = 17  # 前 10 个 epoch 只训练新模块
+PHASE2_EPOCHS = 40  # 后 20 个 epoch 全部微调
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -47,6 +50,9 @@ def main():
     if not hasattr(cfg, 'lr_mult'):
         cfg.lr_mult = args.lr_mult
 
+    print(f"cfg.lr_mult = {cfg.lr_mult}")
+    
+
     cudnn.benchmark = True
 
     from common.base import Trainer
@@ -76,6 +82,45 @@ def main():
     # ================================================================
     print('### Start training ###')
     for epoch in range(trainer.start_epoch, cfg.end_epoch):
+        # ---- 切换训练阶段 ----
+        if epoch < PHASE1_EPOCHS:
+            if trainer.model.module.training_phase != 1:
+                trainer.model.module.set_training_phase(1)
+                # Phase 1 的 optimizer：只包含 position_net + decoder
+                trainer.optimizer = torch.optim.Adam([
+                    {'params': list(trainer.model.module.hand_position_net.parameters()) +
+                            list(trainer.model.module.hand_decoder.parameters()) +
+                            list(trainer.model.module.face_position_net.parameters()) +
+                            list(trainer.model.module.face_decoder.parameters()),
+                    'lr': cfg.lr}
+                ])
+                trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    trainer.optimizer, 
+                    PHASE1_EPOCHS * trainer.itr_per_epoch,
+                    eta_min=1e-6
+                )
+                trainer.logger.info(f"=== Phase 1: epoch {epoch} ===")
+        else:
+            if trainer.model.module.training_phase != 2:
+                trainer.model.module.set_training_phase(2)
+                # Phase 2 的 optimizer：新模块 + regressor（小学习率）
+                trainer.optimizer = torch.optim.Adam([
+                    {'params': list(trainer.model.module.hand_position_net.parameters()) +
+                            list(trainer.model.module.hand_decoder.parameters()) +
+                            list(trainer.model.module.face_position_net.parameters()) +
+                            list(trainer.model.module.face_decoder.parameters()),
+                    'lr': cfg.lr * 0.1},  # Phase 2 新模块也降低学习率
+                    {'params': list(trainer.model.module.hand_regressor.parameters()) +
+                            list(trainer.model.module.face_regressor.parameters()),
+                    'lr': cfg.lr * 0.01},  # regressor 用更小的学习率
+                ])
+                trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    trainer.optimizer,
+                    PHASE2_EPOCHS * trainer.itr_per_epoch,
+                    eta_min=1e-7
+                )
+                trainer.logger.info(f"=== Phase 2: epoch {epoch} ===")
+
         trainer.tot_timer.tic()
         trainer.read_timer.tic()
 

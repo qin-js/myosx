@@ -99,6 +99,33 @@ class Model(nn.Module):
             'face_regressor',
         ]
 
+        self.training_phase = 1
+
+    def set_training_phase(self, phase):
+        """
+        Phase 1: 只训练 position_net + decoder（冻结 regressor）
+        Phase 2: 全部训练模块一起微调
+        """
+        self.training_phase = phase
+        
+        if phase == 1:
+            # 冻结 regressor
+            for module_name in ['hand_regressor', 'face_regressor']:
+                module = getattr(self, module_name)
+                module.eval()
+                for param in module.parameters():
+                    param.requires_grad = False
+            print("Phase 1: 冻结 regressor，只训练 position_net + decoder")
+            
+        elif phase == 2:
+            # 解冻 regressor
+            for module_name in ['hand_regressor', 'face_regressor']:
+                module = getattr(self, module_name)
+                module.train()
+                for param in module.parameters():
+                    param.requires_grad = True
+            print("Phase 2: 解冻 regressor，全部微调")
+
 
     def freeze_modules(self):
         """

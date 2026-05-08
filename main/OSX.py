@@ -263,6 +263,8 @@ class Model(nn.Module):
         # face keypoint-guided deformable decoder
         _, face_joint_img, face_img_feat_joints = self.face_position_net(face_feats[-2])  # (N, J_P, 3) in (face_hm_shape[2], face_hm_shape[1], face_hm_shape[0]) space
         face_coord_init = self.heatmap2norm(face_joint_img, cfg.output_face_hm_shape)
+        print(f"face_coord_init.shape: {face_coord_init.shape}")
+        print(f"face_img_feat_joints.shape: {face_img_feat_joints.shape}")
         face_img_feat_joints = self.face_decoder(face_feats, coord_init=face_coord_init.detach(), query_init=face_img_feat_joints)
         # face regression head
         expr, jaw_pose = self.face_regressor(face_img_feat_joints, face_joint_img.detach(), face_feats[-1])

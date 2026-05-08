@@ -145,8 +145,9 @@ def parse_args():
     parser.add_argument('--test_batch_size', type=int, default=16 )
     parser.add_argument('--encoder_setting', type=str, default='osx_l', choices=['osx_b', 'osx_l'])
     parser.add_argument('--decoder_setting', type=str, default='wo_face_decoder', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
-    parser.add_argument('--testset', type=str, default='EHF')
+    parser.add_argument('--testset', type=str, default='EHF', choices=['EHF', 'HAA500'])
     parser.add_argument('--agora_benchmark', action='store_true')
+    parser.add_argument('--debug_vis', action='store_true')
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l_wo_face_decoder.pth.tar')
     args = parser.parse_args()
 
@@ -187,7 +188,7 @@ def main():
         
         
         # ========== 调试可视化：只对第一个 batch ==========
-        if not debug_vis_done:
+        if args.debug_vis and not debug_vis_done:
             print("\n[Debug] Visualizing first batch...")
             # 可视化 batch 中的前几个样本
             batch_size = inputs['img'].shape[0]

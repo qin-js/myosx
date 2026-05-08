@@ -315,6 +315,7 @@ class Trainer(Base):
 
             # strict=False 允许只覆盖可训练部分，不动刚刚加载好的 Backbone
             model.load_state_dict(model_dict, strict=False) 
+            
             self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
 
         # ---- 加载 optimizer 状态 ----
@@ -655,7 +656,11 @@ class Tester(Base):
                 print(f"\n⚠️ 警告: 以下可训练网络部分存在未加载的参数 (请检查拼写):")
                 for m in missing:
                     print(f"  - {m}")
-            else:
+            if unexpected:
+                print(f"仍有未预期参数！！！！！！")
+                for m in unexpected:
+                    print(f"  - {m}")
+            if not missing and not unexpected:
                 print("\n🎉 完美！可训练网络已全部加载")
         else:
             raise Exception("Checkpoint 中不存在 'network' 字段，请检查是否正确加载")
