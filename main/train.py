@@ -5,7 +5,7 @@ from config import cfg
 import torch
 
 PHASE1_EPOCHS = 17  # 前 10 个 epoch 只训练新模块
-PHASE2_EPOCHS = 40  # 后 20 个 epoch 全部微调
+PHASE2_EPOCHS = 50  # 后 20 个 epoch 全部微调
 
 
 def parse_args():
@@ -112,7 +112,7 @@ def main():
                     'lr': cfg.lr * 0.1},  # Phase 2 新模块也降低学习率
                     {'params': list(trainer.model.module.hand_regressor.parameters()) +
                             list(trainer.model.module.face_regressor.parameters()),
-                    'lr': cfg.lr * 0.01},  # regressor 用更小的学习率
+                    'lr': cfg.lr * 0.001},  # regressor 用更小的学习率
                 ])
                 trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                     trainer.optimizer,

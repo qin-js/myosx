@@ -149,6 +149,7 @@ def parse_args():
     parser.add_argument('--agora_benchmark', action='store_true')
     parser.add_argument('--debug_vis', action='store_true')
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l_wo_face_decoder.pth.tar')
+    parser.add_argument('--continue_train_path', type=str, default="")
     args = parser.parse_args()
 
     if not args.gpu_ids:
@@ -174,6 +175,8 @@ def main():
                             agora_benchmark=args.agora_benchmark,
                             testset=args.testset,
                             )
+    if args.continue_train_path:
+        cfg.continue_train_path = args.continue_train_path
     cudnn.benchmark = True
     from common.base import Tester
     tester = Tester()

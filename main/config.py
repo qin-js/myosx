@@ -25,7 +25,7 @@ class Config:
     dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500']
     # trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
     trainset_3d = []; trainset_2d = ['HAA500']; testset = 'EHF'
-    continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_29.pth.tar"
+    continue_train_path = "/mnt/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_31.pth.tar"
 
     ## UBody setting
     train_sample_interval = 10

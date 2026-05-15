@@ -25,4 +25,5 @@ python train.py \
     --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
     --encoder_setting osx_l \
     --grad_clip 1.0 \
-    --decoder_setting pytorch
+    --decoder_setting pytorch \
+    #--continue_train_path /mnt/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_31.pth.tar
