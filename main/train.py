@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument('--agora_benchmark', action='store_true')
     parser.add_argument('--ubody_benchmark', action='store_true')
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l.pth.tar')
+    parser.add_argument('--continue_train_path', type=str, default="")
     parser.add_argument('--grad_clip', type=float, default=1.0,
                         help='梯度裁剪最大范数')
     args = parser.parse_args()
@@ -49,6 +50,9 @@ def main():
     # 如果 cfg 中没有 lr_mult，手动设置
     if not hasattr(cfg, 'lr_mult'):
         cfg.lr_mult = args.lr_mult
+
+    if args.continue_train and args.continue_train_path:
+        cfg.continue_train_path = args.continue_train_path
 
     print(f"cfg.lr_mult = {cfg.lr_mult}")
     

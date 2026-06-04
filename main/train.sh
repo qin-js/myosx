@@ -15,7 +15,7 @@
 # 恢复训练
 python train.py \
     --gpu_ids 0 \
-    --lr 3e-4 \
+    --lr 2e-4 \
     --lr_mult 0.1 \
     --continue_train \
     --train_batch_size 64 \
@@ -26,4 +26,4 @@ python train.py \
     --encoder_setting osx_l \
     --grad_clip 1.0 \
     --decoder_setting pytorch \
-    #--continue_train_path /mnt/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_31.pth.tar
+    --continue_train_path /workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_47.pth.tar

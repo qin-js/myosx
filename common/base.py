@@ -863,6 +863,10 @@ class Demoer(Base):
                 print(f"\n⚠️ 警告: 以下可训练网络部分存在未加载的参数 (请检查拼写):")
                 for m in missing:
                     print(f"  - {m}")
+            elif unexpected:
+                print(f"\n⚠️ 警告: 以下可训练网络部分存在未预期的参数 (请检查拼写):")
+                for m in unexpected:
+                    print(f"  - {m}")
             else:
                 print("\n🎉 完美！可训练网络已全部加载")
         else:

@@ -42,7 +42,9 @@ cudnn.benchmark = True
 # load model
 cfg.set_additional_args(encoder_setting=args.encoder_setting, decoder_setting=args.decoder_setting, pretrained_model_path=args.pretrained_model_path)
 from common.base import Demoer
+from common.base import Tester
 demoer = Demoer()
+# demoer = Tester()
 demoer._make_model()
 from common.utils.preprocessing import load_img, process_bbox, generate_patch_image
 from common.utils.vis import render_mesh, save_obj, vis_keypoints
