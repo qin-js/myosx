@@ -22,7 +22,7 @@ class Config:
     )
 
     # dataset setting
-    dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500']
+    dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500', 'BEDLAM']
     # trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
     trainset_3d = []; trainset_2d = ['HAA500']; testset = 'EHF'
     continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_49.pth.tar"
@@ -32,6 +32,23 @@ class Config:
     test_sample_interval = 100
     make_same_len = False
     ubody_benchmark = False
+
+    ## BEDLAM setting
+    bedlam_dir = "/workspace/BEDLAM_Dataset"
+    bedlam_img_dir = osp.join(bedlam_dir, 'bedlam_data', 'images')
+    bedlam_annot_path = osp.join(bedlam_dir, 'bedlam_data', 'processed_labels')
+    bedlam_sample_interval = 1
+    bedlam_max_samples = None
+    bedlam_skip_missing_images = True
+
+    ## InterHand2.6M setting
+    interhand_annot_path = os.environ.get('INTERHAND_ANNOS', '/workspace/OpenDataLab___InterHand2_dot_6M')
+    interhand_img_dir = os.environ.get('INTERHAND_IMG_DIR', '/workspace/OpenDataLab___InterHand2_dot_6M/raw/InterHand2.6M_5fps_batch1/images')
+    interhand_sample_interval = 1
+    interhand_max_samples = None
+    interhand_skip_missing_images = False
+    interhand_use_human_annot = True
+    interhand_require_mano = True
 
     ## input, output size
     input_img_shape = (512, 384)
