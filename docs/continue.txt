@@ -1,23 +1,32 @@
 # InterHand + BEDLAM 微调交接记录
 
-更新时间：2026-06-18（第五次更新）
-当前状态：B 类·精确版修复已落地并**启动全量验证 run**（`output/interhand_bedlam_b`）；
-本会话另实现了 rotation-matrix hand pose loss（默认关）、修了 InterHand 加载 OOM、
-给两个 loader 加了坏图兜底。验证 run 关会话前健康跑到 epoch 0 尾，**尚未到崩点 epoch2-itr429**。
+更新时间：2026-06-18（第六次更新）
+当前状态：**B 类修复已验证通过**——`output/interhand_bedlam_b` 平稳越过 epoch2-itr429 崩点
+（A 类在此永久崩到 3–4，B 类 `joint_img` 全程 ~0.2），**根因坐实**。该 run 作为 Stage 2 手部
+微调继续跑至 epoch 14。本会话另实现 rotation-matrix hand pose loss（默认关）、修了 InterHand
+加载 OOM、两个 loader 加坏图兜底、`test.py` 加 `--max_eval_iters`。
 
 ## 当前进度（重开先看这里）
 
 **主 run**：`output/interhand_bedlam_b`（命令见「三」，带 `--bedlam_no_hand_img_loss`）。
-关会话前：已健康跑过 epoch 0 全程、进入 epoch 1 早段（itr~369/2703）（`joint_img`≈0.2；
-`[bedlam] joint_img`≈0.20 只剩 body 项、`[interhand]`≈0.34；0 NaN / 0 traceback / 0 坏图 fallback），
-**但还没到崩点 epoch2-itr429**，故尚不能下结论（A 类那次 epoch0–1 也健康、epoch2 才崩）。
+**已验证通过**：epoch2（含崩点 itr429）`joint_img` 全程稳在 ~0.2（整段峰值 0.31），epoch3 继续稳；
+A 类同期是 3–4 永久崩。分源：`[interhand] joint_img`≈0.22 且 `smplx_pose` 降到 ~0.04（手指在变好）、
+`[bedlam]` 全身 loss 稳（`smplx_pose`0.18 / `shape`0.48 / `joint_cam`0.024，没遗忘）。0 NaN/traceback/坏图。
+→ **根因坐实**：BEDLAM 手部 `joint_img/smplx_joint_img` 经共享 soft-argmax 热图头污染梯度，切掉即解决；
+**不需要 curriculum**。
 
-**重开第一步**：读 `output/interhand_bedlam_b/log/train_logs.txt` 判定：
-1. 已过 `epoch2 itr~429`（全局 ~5825）且 `joint_img` 仍 < ~0.5、没跳 3+
-   → **B 类修复成功、根因坐实** → 进「八、验证通过后的下一步」。
-2. `epoch2` 附近 `joint_img` 又跳 3+ → 热图头本身不稳 → 走 curriculum（见「五」第 3 条）。
-3. 进程已死/中断 → 先排查是否坏图以外的崩；重跑或从最近 snapshot 续训
-   （`--continue_train --continue_train_path <snap>`，且**继续带 `--bedlam_no_hand_img_loss`**）。
+**重开第一步**：
+1. 看 run 是否跑完 14 epoch（snapshot 每 epoch 存于 `output/interhand_bedlam_b/model_dump/`）；
+   Phase 2 从 epoch 10 起（同批手部模块、lr×0.1，encoder/body 仍冻结，安全）。
+2. GPU 空闲时评估某 checkpoint（训练占卡时勿并发，会 OOM）：
+```bash
+cd main && python test.py --gpu 0 --decoder_setting pytorch --testset EHF \
+  --exp_name output/eval_b --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+  --continue_train_path ../output/interhand_bedlam_b/model_dump/snapshot_<E>.pth.tar \
+  --max_eval_iters 20      # 快速看；去掉 = 评估整个 testset
+```
+   评估时确认日志"成功覆盖了 N 个"的 **N>0**（现在 N=0 会报错 = 跑在未恢复权重上）。
+3. 验证门槛见「八」：InterHand 手 loss 降、BEDLAM 全身不退、无左右手翻转。
 
 ## 项目背景
 
@@ -150,30 +159,32 @@ cd /workspace/myosx/main && python train.py \
 
 - InterHand loader 个别 joint 投影非 finite，loss 层已兜底；更干净是在
   `data/InterHand26M/InterHand26M.py` 把非 finite 对应 valid/trunc 置 0。
-- `test.py:223` 仍有 `if itr >= 50: break` 的 debug 限制 → 评估只跑 50 个 batch（partial），
-  正式评估前移除或改成可配置。
-- 临时文件可清理：`main/_tmp_pg_test.py`；仓库根目录 4 个 `core.*` coredump。
 - 数据完整性：本会话 InterHand + BEDLAM 都出现过个别坏图（已被坏图兜底，不崩）。若坏图成片
   （下载/同步未完成），等于有效样本变少 + 重采有偏，建议单独扫一遍两数据集图片可读性确认。
 
-（注：旧版本担心的 `Tester`/`Demoer` 因 `module.` 前缀 load 0 张量的问题已解决——
-现在 `_load_lightweight_trained_modules`（`base.py:193-200`）对每个 key 带/不带前缀都试；
-首次评估时确认日志"成功覆盖了 N 个"的 N 非 0 即可。详见 `code_changes_review.md` §12.1。)
+（已解决，备忘）
+- `test.py` 50-batch 硬限制 → 现由 `--max_eval_iters N` 控制（默认 <=0 = 评估整个 testset）。
+- 临时文件 `main/_tmp_pg_test.py` + 根目录 `core.*` 已在 dev 分支删除，`core.*` 已入 `.gitignore`。
+- `Tester`/`Demoer` 的 `module.` 前缀 load 0 张量问题已由 `_load_lightweight_trained_modules`
+  （`base.py`，带/不带前缀都试）解决；本会话又加了 `loaded==0 → 报错` 保护。详见
+  `code_changes_review.md` §12.1。
 
 ## 七、历史 run / snapshot 索引
 
-- `output/interhand_bedlam_b`：**当前主 run** —— B 类·精确版全量验证（本会话启动，带
-  `--bedlam_no_hand_img_loss`）。关会话时在 epoch 1 早段、健康、未到崩点。重开先看它（见「当前进度」）。
+- `output/interhand_bedlam_b`：**当前主 run / Stage 2** —— B 类·精确版（带 `--bedlam_no_hand_img_loss`）。
+  **已验证越过 epoch2-itr429 崩点、`joint_img` 全程 ~0.2**；本会话末在 epoch 3、健康，继续跑至 epoch 14。
 - `output/interhand_bedlam`：第一次崩（epoch1 后段）。`snapshot_1` 是崩后权重，**不要续训**。
 - `output/interhand_bedlam_a`：A 类全量 run，epoch2-itr429 崩（已停，进程已不在）。日志保留作对照。
 - `output/diag_zsplit`：lr=1e-4 + cap=4096 短跑，没到崩点（假阴性），仅用于看健康态 xy/z 模式。
 
-## 八、验证通过后的下一步（B 类确认成功才做）
+## 八、验证通过后的下一步（B 类已通过，现可推进）
 
 1. 按 `interhand_bedlam_training_plan.md` 的 Stage 1–4 推进（BEDLAM warmup → 60:40 →
    50:50 → 可选 polish），用分源日志 + 每 epoch 可视化面板盯其 §8.3 验证门槛
    （InterHand 手 loss 降、BEDLAM 全身 loss 不涨 >5–10%、无左右手翻转）。
-2. 评估前先处理「六」里的 `test.py:223` 50-batch 限制；首次评估确认 snapshot 真加载（日志 N>0）。
+   注：当前 `interhand_bedlam_b` 本身就是 60:40 的 Stage 2，跑完即得首个可评估 checkpoint。
+2. 评估用 `test.py --max_eval_iters N`（已参数化，命令模板见「当前进度」第 2 步）；
+   首次评估确认日志"成功覆盖了 N 个"的 N>0（现在 0 会报错）。
 3. 可选实验：开 `--use_hand_rotmat_pose_loss` 看手指姿态是否更稳（与不开做 A/B）。
 
 ## 参考文档

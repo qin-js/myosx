@@ -209,6 +209,10 @@ class Base(object):
 
         model.load_state_dict(model_state_dict, strict=False)
         self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
+        if loaded == 0:
+            self.logger.error(
+                "  ❌ 未加载任何训练张量！评估/推理将跑在未恢复的手/脸权重上，结果无意义。"
+                "请检查 continue_train_path 是否正确、以及 snapshot 的 key 前缀。")
         if skipped:
             self.logger.warning(f"  ⚠️  有 {skipped} 个训练张量未能匹配当前模型")
 

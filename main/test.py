@@ -150,6 +150,8 @@ def parse_args():
     parser.add_argument('--debug_vis', action='store_true')
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l_wo_face_decoder.pth.tar')
     parser.add_argument('--continue_train_path', type=str, default="")
+    parser.add_argument('--max_eval_iters', type=int, default=-1,
+                        help='只评估前 N 个 batch（快速查看用）；<=0 表示评估整个 testset')
     args = parser.parse_args()
 
     if not args.gpu_ids:
@@ -186,6 +188,8 @@ def main():
     eval_result = {}
     cur_sample_idx = 0
     debug_vis_done = False  # 只可视化第一个 batch
+    if args.max_eval_iters > 0:
+        print(f"[eval] 限制只跑前 {args.max_eval_iters} 个 batch（部分评估，指标仅供快速参考）")
     
     for itr, (inputs, targets, meta_info) in enumerate(tqdm(tester.batch_generator)):
         
@@ -220,7 +224,7 @@ def main():
                 eval_result[k] = v
         cur_sample_idx += len(out)
 
-        if itr >= 50:
+        if args.max_eval_iters > 0 and itr + 1 >= args.max_eval_iters:
             break
 
     tester._print_eval_result(eval_result)
