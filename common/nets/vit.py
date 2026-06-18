@@ -348,12 +348,13 @@ class StandardViT(nn.Module):
         self.patch_embed = PatchEmbed(img_size, patch_size, 3, embed_dim)
         
         # 设定任务 Token 数量
-        self.num_task_token = 31 
+        self.num_task_token = 31
         self.task_tokens = nn.Parameter(torch.zeros(1, self.num_task_token, embed_dim))
-        
-        # [核心修正] pos_embed 长度必须等于: patch数量 + task_token数量
-        # 192 + 24 = 216
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches + self.num_task_token, embed_dim))
+
+        # pos_embed 复刻 OSX ViT 的布局: (1, num_patches + 1, C)。多出来的那一槽
+        # ([:, :1]) 是加到每个 patch 上的全局 "cls" pos；task token 不加任何 pos
+        # (见 forward)。这样冻结的 OSX 预训练 body/box 网络才能拿到它期望的特征。
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches + 1, embed_dim))
         
         self.blocks = nn.ModuleList([
             Block(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias)
@@ -376,14 +377,14 @@ class StandardViT(nn.Module):
 
     def forward(self, x):
         B = x.shape[0]
-        x = self.patch_embed(x) # [B, 192, 1024]
-        
-        cls_tokens = self.task_tokens.expand(B, -1, -1) # [B, 24, 1024]
-        x = torch.cat((cls_tokens, x), dim=1) # [B, 216, 1024]
-        
-        # [此时 x 和 pos_embed 都是 216，不再报错]
-        x = x + self.pos_embed 
-        
+        x = self.patch_embed(x)  # [B, 192, 1024]
+
+        # OSX ViT 位置编码: patch 加 patch_pos + 单个全局 cls_pos；task token 在其后
+        # 拼接、不加任何 pos_embed。复刻 transformer_utils ViT.forward_features。
+        x = x + self.pos_embed[:, 1:] + self.pos_embed[:, :1]
+        task_tokens = self.task_tokens.expand(B, -1, -1)  # [B, 31, 1024]
+        x = torch.cat((task_tokens, x), dim=1)  # [B, 31+192, 1024]
+
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)

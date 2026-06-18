@@ -127,7 +127,7 @@ class Config:
     # save one InterHand (pred boxes/crop) + one BEDLAM (mesh scatter) diagnostic
     # image per epoch under output/<exp>/vis/epoch_panel/
     vis_epoch_panel = True
-    print_iters = 50
+    print_iters = 100
     lr_mult = 0.1
     smplx_loss_weight = 1
     agora_benchmark = False

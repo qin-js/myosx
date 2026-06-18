@@ -100,16 +100,15 @@ class Base(object):
 
         for model_key in model_state_dict.keys():
             if model_key == 'encoder.pos_embed':
-                target_shape = model_state_dict[model_key].shape
+                # StandardViT 现采用 OSX 的 (1, num_patches+1, C) pos_embed 布局，
+                # 直接按形状匹配加载（不再做 193->223 扩充）。
                 v = src_state_dict.get(model_key)
-                if v is not None and v.shape != target_shape:
-                    cls_pos = v[:, 0:1, :]
-                    patch_pos = v[:, 1:, :]
-                    task_pos = cls_pos.repeat(1, 31, 1)
-                    v = torch.cat([task_pos, patch_pos], dim=1)
-                    self.logger.info(f"✨ 自动扩充 pos_embed 形状: (1,193,1024) -> {v.shape}")
-                if v is not None and v.shape == target_shape:
+                if v is not None and v.shape == model_state_dict[model_key].shape:
                     new_state_dict[model_key] = v
+                elif v is not None:
+                    self.logger.warning(
+                        f"⚠️ encoder.pos_embed 形状不匹配: ckpt {tuple(v.shape)} vs "
+                        f"model {tuple(model_state_dict[model_key].shape)}")
                 continue
 
             if model_key in src_state_dict:
@@ -373,16 +372,9 @@ class Trainer(Base):
                 
             # 找到对应在你当前 DataParallel 模型中的 key
             target_key = 'module.' + k
-            
-            #[映射逻辑 3]: 处理位置编码的自动扩充 (193 -> 223)
-            if k == 'encoder.pos_embed' and target_key in model_dict:
-                target_shape = model_dict[target_key].shape
-                if v.shape[1] == 193 and target_shape[1] == 223:
-                    cls_pos = v[:, :1, :]
-                    patch_pos = v[:, 1:, :]
-                    task_pos = cls_pos.repeat(1, 31, 1)
-                    v = torch.cat([task_pos, patch_pos], dim=1) # 请确认你的拼接顺序
-                    self.logger.info(f"✨ 自动扩充 pos_embed 形状: (1,193,1024) -> {v.shape}")
+
+            # encoder.pos_embed: StandardViT 现与 OSX 同为 (1,193,1024)，直接走下方
+            # 通用形状匹配加载，不再做 193->223 扩充。
 
             # 验证形状并存入新字典
             if target_key in model_dict:
