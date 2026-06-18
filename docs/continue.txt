@@ -1,32 +1,45 @@
 # InterHand + BEDLAM 微调交接记录
 
-更新时间：2026-06-18（第六次更新）
-当前状态：**B 类修复已验证通过**——`output/interhand_bedlam_b` 平稳越过 epoch2-itr429 崩点
-（A 类在此永久崩到 3–4，B 类 `joint_img` 全程 ~0.2），**根因坐实**。该 run 作为 Stage 2 手部
-微调继续跑至 epoch 14。本会话另实现 rotation-matrix hand pose loss（默认关）、修了 InterHand
-加载 OOM、两个 loader 加坏图兜底、`test.py` 加 `--max_eval_iters`。
+更新时间：2026-06-18（第七次更新）
+当前状态：发现并修复了一个**编码器 bug**——`StandardViT` 的 pos_embed 用法和 OSX 不一致
+（详见「九」），这是 EHF body 比 OSX 差 ~4mm 的根因。已修复 + 验证（body PA MPJPE
+60.57→**56.53**≈OSX 56.66），提交 `73eeeea` 已 push 到 `origin/dev`。**因编码器特征改变，
+`_b` 的手/脸头作废，需用修好的编码器从头重训 → `interhand_bedlam_c`（命令见下）。**
+B 类梯度污染修复已坐实有效（之前在 `_b` 上平稳越过 epoch2-itr429 崩点）。
 
 ## 当前进度（重开先看这里）
 
-**主 run**：`output/interhand_bedlam_b`（命令见「三」，带 `--bedlam_no_hand_img_loss`）。
-**已验证通过**：epoch2（含崩点 itr429）`joint_img` 全程稳在 ~0.2（整段峰值 0.31），epoch3 继续稳；
-A 类同期是 3–4 永久崩。分源：`[interhand] joint_img`≈0.22 且 `smplx_pose` 降到 ~0.04（手指在变好）、
-`[bedlam]` 全身 loss 稳（`smplx_pose`0.18 / `shape`0.48 / `joint_cam`0.024，没遗忘）。0 NaN/traceback/坏图。
-→ **根因坐实**：BEDLAM 手部 `joint_img/smplx_joint_img` 经共享 soft-argmax 热图头污染梯度，切掉即解决；
-**不需要 curriculum**。
+**里程碑（按时间）**：
+1. **B 类修复**（切 BEDLAM 手部 `joint_img/smplx_joint_img`）→ 根因坐实、训练稳定，`_b` 越过
+   epoch2-itr429 崩点（A 类在此永久崩到 3–4）。详见「一」「二」。
+2. **编码器 bug**：`StandardViT` 位置编码和 OSX 不一致（patch 漏加 cls_pos、task token 多加），
+   是 EHF body 差的根因。**已修复 + 验证 body 56.53≈OSX 56.66**（提交 `73eeeea`）。详见「九」。
+3. 因编码器特征改变，`_b`（旧编码器上训）**作废** → 必须从修好的编码器重训。
 
-**重开第一步**：
-1. 看 run 是否跑完 14 epoch（snapshot 每 epoch 存于 `output/interhand_bedlam_b/model_dump/`）；
-   Phase 2 从 epoch 10 起（同批手部模块、lr×0.1，encoder/body 仍冻结，安全）。
-2. GPU 空闲时评估某 checkpoint（训练占卡时勿并发，会 OOM）：
+**重开第一步 = 启动重训 `_c`**（在有 GPU 的环境；本仓库 sandbox 无 GPU，验证/训练都要你自己跑）：
 ```bash
-cd main && python test.py --gpu 0 --decoder_setting pytorch --testset EHF \
-  --exp_name output/eval_b --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-  --continue_train_path ../output/interhand_bedlam_b/model_dump/snapshot_<E>.pth.tar \
-  --max_eval_iters 20      # 快速看；去掉 = 评估整个 testset
+cd /workspace/myosx/main && python train.py \
+    --gpu_ids 0 --lr 2e-4 --lr_mult 0.1 --train_batch_size 64 --num_thread 8 \
+    --end_epoch 14 --phase1_epochs 10 \
+    --exp_name output/interhand_bedlam_c \
+    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+    --encoder_setting osx_l --grad_clip 1.0 --decoder_setting pytorch \
+    --bedlam_use_hand_roi_quality --bedlam_no_hand_img_loss \
+    --posnet_lr_mult 1.0
 ```
-   评估时确认日志"成功覆盖了 N 个"的 **N>0**（现在 N=0 会报错 = 跑在未恢复权重上）。
-3. 验证门槛见「八」：InterHand 手 loss 降、BEDLAM 全身不退、无左右手翻转。
+- `--posnet_lr_mult 1.0`：放开 A 类对 `hand_position_net` 的限速（它本是为压 BEDLAM 污染，
+  B-fix 已从根上去掉该污染，再限速只拖慢手部学习）。盯 epoch0–2 的 `joint_img`，若又跳回退 0.5。
+- 其余超参不动（`_b` 证明稳；先要一个"正确编码器+同配方"的干净基线再谈深调）。
+- 盯的点同 `_b`：`joint_img` 稳 ~0.2、过 epoch2-itr429 不崩、`[interhand]` 手 loss 降、`[bedlam]` 全身不退。
+- ⚠️ **别和训练并发跑 eval**——`_b` 很可能就是评估抢 GPU 把训练 OOM 掉的（10:20 干净停在 epoch6）。
+
+**评估**（每 epoch checkpoint，GPU 空时单独跑）：
+- ⚠️ **不要只用 EHF 判手**：EHF body 被冻结主导、手是温和姿态测不出 InterHand 增益，还出现过
+  U 形漂移（16.0@ep3→16.4@ep5）。`_b` 的 EHF 手≈OSX 是这个原因，**不代表没学**。
+- 用**手部基准**（InterHand 测试集 / 有手势的图）+ 每 epoch 选最优 checkpoint。EHF 仍可作全身
+  sanity（body 现已≈OSX）。
+- 命令：`test.py --decoder_setting pytorch --testset EHF --continue_train_path <snap> --max_eval_iters N`
+  （确认日志"成功覆盖了 N 个" N>0）。
 
 ## 项目背景
 
@@ -171,8 +184,10 @@ cd /workspace/myosx/main && python train.py \
 
 ## 七、历史 run / snapshot 索引
 
-- `output/interhand_bedlam_b`：**当前主 run / Stage 2** —— B 类·精确版（带 `--bedlam_no_hand_img_loss`）。
-  **已验证越过 epoch2-itr429 崩点、`joint_img` 全程 ~0.2**；本会话末在 epoch 3、健康，继续跑至 epoch 14。
+- `output/interhand_bedlam_c`：**当前主 run**（待你启动，命令见「当前进度」）——修好编码器后的
+  重训，`--posnet_lr_mult 1.0`。
+- `output/interhand_bedlam_b`：B 类·精确版，在**旧（错）编码器**上训，epoch6 因评估抢 GPU 被 OOM 停。
+  **已验证 B 类有效**（越过 epoch2-itr429 崩点），但因编码器 bug **手/脸头作废**，不要再用其 snapshot。
 - `output/interhand_bedlam`：第一次崩（epoch1 后段）。`snapshot_1` 是崩后权重，**不要续训**。
 - `output/interhand_bedlam_a`：A 类全量 run，epoch2-itr429 崩（已停，进程已不在）。日志保留作对照。
 - `output/diag_zsplit`：lr=1e-4 + cap=4096 短跑，没到崩点（假阴性），仅用于看健康态 xy/z 模式。
@@ -182,10 +197,32 @@ cd /workspace/myosx/main && python train.py \
 1. 按 `interhand_bedlam_training_plan.md` 的 Stage 1–4 推进（BEDLAM warmup → 60:40 →
    50:50 → 可选 polish），用分源日志 + 每 epoch 可视化面板盯其 §8.3 验证门槛
    （InterHand 手 loss 降、BEDLAM 全身 loss 不涨 >5–10%、无左右手翻转）。
-   注：当前 `interhand_bedlam_b` 本身就是 60:40 的 Stage 2，跑完即得首个可评估 checkpoint。
-2. 评估用 `test.py --max_eval_iters N`（已参数化，命令模板见「当前进度」第 2 步）；
-   首次评估确认日志"成功覆盖了 N 个"的 N>0（现在 0 会报错）。
+   注：`interhand_bedlam_c`（重训）本身就是 60:40 的 Stage 2，跑完即得首个可评估 checkpoint。
+2. 评估用 `test.py --max_eval_iters N`（已参数化，命令模板见「当前进度」评估段）；
+   首次评估确认日志"成功覆盖了 N 个"的 N>0（现在 0 会报错）。**判手用手部基准，别只看 EHF**。
 3. 可选实验：开 `--use_hand_rotmat_pose_loss` 看手指姿态是否更稳（与不开做 A/B）。
+
+## 九、编码器 pos_embed bug（已修复，根因 + 证据）
+
+`StandardViT`（pytorch 路径编码器，纯 PyTorch 重写）的位置编码用法和 OSX 的 MMCV ViT 不一致，
+是 EHF body 比 OSX 差 ~4mm（PA MPJPE Body 60.6 vs 56.7）的根因——**不是微调问题**。
+
+- OSX ViT（`transformer_utils/.../backbones/vit.py:312-319`）：
+  `p = p + pos_embed[:,1:] + pos_embed[:,:1]`（每个 patch 加 patch_pos + 单个全局 cls_pos），
+  再 `cat((task_tokens, p))`——**task token 不加任何 pos**。
+- StandardViT（修复前）：先 `cat((task,patch))` 再整体 `+ pos_embed`（loader 把 pos 拼成
+  `[cls×31, patch×192]`）→ **patch 漏了 cls_pos、task token 反而多加 cls_pos**。
+
+冻结的 OSX 预训练 body/box net 期望 OSX 编码器特征，被扰动后 body 退化；其余（attention 数学、
+qkv/proj key、block、last_norm→norm）都对得上，所以 body 只偏几 mm 而非崩坏。
+
+修复（提交 `73eeeea`，已 push）：
+- `common/nets/vit.py`：`pos_embed` 形状改回 `(1, num_patches+1, C)`；forward 复刻 OSX
+  （patch 加 `pos_embed[:,1:]+pos_embed[:,:1]`，task token 拼在后面不加 pos）。
+- `common/base.py`：两个 loader 删掉 193→223 扩充，直接按形状加载。
+- 验证：EHF `PA MPJPE (Body)` 60.57→**56.53**（OSX 56.66），确认生效。
+
+影响：编码器特征改变 → 旧编码器上训的手/脸头（`_b`）作废 → 必须重训（`_c`）。
 
 ## 参考文档
 

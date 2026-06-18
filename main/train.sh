@@ -3,6 +3,7 @@ python train.py \
       --gpu_ids 0 --lr 2e-4 --lr_mult 0.1 --train_batch_size 64 --num_thread 8 \
       --end_epoch 14 --phase1_epochs 10 \
       --exp_name output/interhand_bedlam_b \
+      --posnet_lr_mult 1.0 
       --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
       --encoder_setting osx_l --grad_clip 1.0 --decoder_setting pytorch \
       --bedlam_use_hand_roi_quality --bedlam_no_hand_img_loss
