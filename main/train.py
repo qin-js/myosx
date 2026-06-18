@@ -4,8 +4,64 @@ import torch.backends.cudnn as cudnn
 from config import cfg
 import torch
 
-PHASE1_EPOCHS = 17  # 前 10 个 epoch 只训练新模块
-PHASE2_EPOCHS = 50  # 后 20 个 epoch 全部微调
+DEFAULT_PHASE1_EPOCHS = 10
+
+
+def _per_source_losses(raw_loss, meta_info):
+    """Split per-sample losses by dataset source for separate monitoring.
+
+    raw_loss: dict of loss tensors still carrying the batch dim (dim 0), BEFORE
+    any .mean(). Returns {'interhand': {k: float}, 'bedlam': {k: float}} where
+    each value is the mean loss over the samples of that source in the batch.
+    Returns None if source flags are absent (e.g. single-dataset training).
+    """
+    if 'is_interhand' not in meta_info or 'is_bedlam' not in meta_info:
+        return None
+    ih = meta_info['is_interhand'].detach().view(-1).float()
+    bl = meta_info['is_bedlam'].detach().view(-1).float()
+    out = {'interhand': {}, 'bedlam': {}}
+    for k, v in raw_loss.items():
+        vd = v.detach()
+        if vd.ndim == 0 or vd.shape[0] != ih.numel():
+            continue
+        # collapse every dim except batch -> per-sample scalar
+        per_sample = vd.reshape(vd.shape[0], -1).mean(dim=1)
+        # meta_info flags may live on CPU under DataParallel; align device.
+        ih_d = ih.to(per_sample.device)
+        bl_d = bl.to(per_sample.device)
+        for src_name, mask in (('interhand', ih_d), ('bedlam', bl_d)):
+            denom = mask.sum()
+            if denom.item() > 0:
+                out[src_name][k] = ((per_sample * mask).sum() / denom).item()
+    return out
+
+
+def _raise_nonfinite_loss(loss, total_loss, meta_info, logger, epoch, itr):
+    if torch.isfinite(total_loss):
+        return
+
+    loss_state = []
+    for k, v in loss.items():
+        value = v.detach()
+        if torch.isfinite(value):
+            loss_state.append('%s=%.6g' % (k, value.item()))
+        else:
+            loss_state.append('%s=%s' % (k, value.detach().cpu().item()))
+
+    batch_state = []
+    if 'is_interhand' in meta_info:
+        batch_state.append('interhand=%.0f' % meta_info['is_interhand'].sum().detach().cpu().item())
+    if 'is_bedlam' in meta_info:
+        batch_state.append('bedlam=%.0f' % meta_info['is_bedlam'].sum().detach().cpu().item())
+
+    msg = 'Non-finite total_loss before backward at epoch %d itr %d. %s %s' % (
+        epoch,
+        itr,
+        ' '.join(batch_state),
+        ' '.join(loss_state),
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
 
 
 def parse_args():
@@ -20,15 +76,162 @@ def parse_args():
     parser.add_argument('--end_epoch', type=int, default=10)
     parser.add_argument('--train_batch_size', type=int, default=32)
     parser.add_argument('--encoder_setting', type=str, default='osx_l', choices=['osx_b', 'osx_l'])
-    parser.add_argument('--decoder_setting', type=str, default='normal', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
+    parser.add_argument('--decoder_setting', type=str, default='pytorch', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
     parser.add_argument('--agora_benchmark', action='store_true')
     parser.add_argument('--ubody_benchmark', action='store_true')
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l.pth.tar')
     parser.add_argument('--continue_train_path', type=str, default="")
     parser.add_argument('--grad_clip', type=float, default=1.0,
                         help='梯度裁剪最大范数')
+    parser.add_argument('--posnet_lr_mult', type=float, default=0.25,
+                        help='hand_position_net 单独学习率倍率 (lr * posnet_lr_mult)，'
+                             '稳定 soft-argmax 深度分支防止中途发散')
+    parser.add_argument('--posnet_grad_clip', type=float, default=0.5,
+                        help='hand_position_net 单独梯度裁剪范数 (<=0 关闭)')
+    parser.add_argument('--phase1_epochs', type=int, default=DEFAULT_PHASE1_EPOCHS,
+                        help='手部微调 Phase 1 的 epoch 数；默认覆盖 10 epoch 短程混训')
+    parser.add_argument('--train_face_modules', action='store_true',
+                        help='默认冻结 face 分支；需要 BEDLAM face/expression 微调时显式开启')
+    parser.add_argument('--no_phase1_hand_regressor', action='store_true',
+                        help='Phase 1 不训练 hand_regressor，仅用于对比旧热身策略')
+    parser.add_argument('--bedlam_max_samples', type=int, default=None)
+    parser.add_argument('--interhand_max_samples', type=int, default=None)
+    parser.add_argument('--bedlam_use_hand_roi_quality', action='store_true')
+    parser.add_argument('--bedlam_no_hand_img_loss', action='store_true',
+                        help='BEDLAM 不监督手部 joint_img/smplx_joint_img（soft-argmax 热图头的'
+                             '唯一梯度源），切断对共享 hand_position_net 的梯度污染；'
+                             '保留 BEDLAM 手部 joint_proj 与全部 SMPL-X/3D/pose 监督，InterHand 不受影响')
+    parser.add_argument('--use_hand_rotmat_pose_loss', action='store_true',
+                        help='额外对 30 个手指关节加 rotation-matrix pose loss（旋转感知，比 '
+                             'axis-angle L1 更稳）；默认关闭，不影响现有训练')
+    parser.add_argument('--hand_rotmat_pose_loss_weight', type=float, default=None,
+                        help='rotation-matrix hand pose loss 权重（默认沿用 cfg 的 1.0）')
+    parser.add_argument('--disable_weighted_dataset_sampling', action='store_true')
     args = parser.parse_args()
     return args
+
+
+def _set_module_trainable(core_model, module_names, trainable):
+    for module_name in module_names:
+        module = getattr(core_model, module_name)
+        module.train(trainable)
+        for param in module.parameters():
+            param.requires_grad = trainable
+
+
+def _grad_params_for_groups(optimizer, group_names):
+    return [
+        p
+        for group in optimizer.param_groups
+        if group.get('name') in group_names
+        for p in group['params']
+        if p.requires_grad and p.grad is not None
+    ]
+
+
+def _collect_module_params(core_model, module_names):
+    params = []
+    for module_name in module_names:
+        module = getattr(core_model, module_name)
+        params.extend([p for p in module.parameters() if p.requires_grad])
+    return params
+
+
+def _configure_training_phase(trainer, phase, remaining_epochs):
+    core_model = trainer.model.module
+    core_model.set_training_phase(phase)
+
+    candidate_modules = [
+        'hand_position_net',
+        'hand_decoder',
+        'hand_regressor',
+        'face_position_net',
+        'face_decoder',
+        'face_regressor',
+    ]
+
+    # hand_position_net is split into its own optimizer group at a reduced lr
+    # (A-class stabilization): it is the soft-argmax module that diverges
+    # mid-epoch, so a persistently smaller step protects it long after any
+    # warmup window would have closed.
+    posnet_modules = ['hand_position_net']
+    normal_modules = ['hand_decoder']
+    special_modules = []
+    phase_scale = 1.0 if phase == 1 else 0.1
+    if phase == 1:
+        if cfg.phase1_train_hand_regressor:
+            special_modules.append('hand_regressor')
+        eta_min = 1e-6
+    else:
+        special_modules.append('hand_regressor')
+        eta_min = 1e-7
+    normal_lr = cfg.lr * phase_scale
+    special_lr = cfg.lr * cfg.lr_mult * phase_scale
+    posnet_lr = cfg.lr * cfg.posnet_lr_mult * phase_scale
+
+    if cfg.train_face_modules:
+        posnet_modules.append('face_position_net')
+        normal_modules.append('face_decoder')
+        special_modules.append('face_regressor')
+
+    trainable_modules = posnet_modules + normal_modules + special_modules
+    _set_module_trainable(core_model, candidate_modules, False)
+    _set_module_trainable(core_model, trainable_modules, True)
+
+    optim_params = []
+    posnet_params = _collect_module_params(core_model, posnet_modules)
+    normal_params = _collect_module_params(core_model, normal_modules)
+    special_params = _collect_module_params(core_model, special_modules)
+    if posnet_params:
+        optim_params.append({'params': posnet_params, 'lr': posnet_lr, 'name': 'position_nets'})
+    if normal_params:
+        optim_params.append({'params': normal_params, 'lr': normal_lr, 'name': 'hand_face_new_modules'})
+    if special_params:
+        optim_params.append({'params': special_params, 'lr': special_lr, 'name': 'regressors'})
+    if not optim_params:
+        raise RuntimeError("No trainable parameters were selected for phase %d" % phase)
+
+    trainer.optimizer = torch.optim.Adam(optim_params)
+    trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        trainer.optimizer,
+        max(1, remaining_epochs * trainer.itr_per_epoch),
+        eta_min=eta_min,
+    )
+
+    # Restore resume optimizer state stashed by _load_resume_checkpoint, but only
+    # when the checkpoint was saved in the SAME phase we are now entering — phases
+    # have different param-group counts/structure, so a cross-phase load would
+    # mismatch. Consumed once (cleared) so later phase switches start fresh.
+    if getattr(trainer, 'resume_optimizer_state', None) is not None:
+        phase1_end_epoch = min(max(int(cfg.phase1_epochs), 0), cfg.end_epoch)
+        ckpt_phase = 1 if trainer.resume_epoch < phase1_end_epoch else 2
+        if ckpt_phase == phase:
+            try:
+                trainer.optimizer.load_state_dict(trainer.resume_optimizer_state)
+                trainer.logger.info("  ✅ 已恢复 phase %d 的 optimizer 状态" % phase)
+            except Exception as exc:
+                trainer.logger.warning("  ⚠️ optimizer 状态恢复失败（分组不匹配？）: %s" % exc)
+        else:
+            trainer.logger.info(
+                "  ⏭️ checkpoint 属于 phase %d，当前进入 phase %d，跳过 optimizer 恢复" % (
+                    ckpt_phase, phase))
+        trainer.resume_optimizer_state = None
+        trainer.resume_epoch = None
+
+    trainer.logger.info("=== Phase %d: epoch %d, remaining_epochs=%d ===" % (
+        phase,
+        trainer.cur_epoch,
+        remaining_epochs,
+    ))
+    trainer.logger.info("  trainable modules: %s" % ", ".join(trainable_modules))
+    for group in trainer.optimizer.param_groups:
+        trainer.logger.info(
+            "  optimizer group %s: %d params, lr=%g" % (
+                group.get('name', 'unnamed'),
+                sum(p.numel() for p in group['params']),
+                group['lr'],
+            )
+        )
 
 
 def main():
@@ -45,11 +248,30 @@ def main():
         pretrained_model_path=args.pretrained_model_path,
         agora_benchmark=args.agora_benchmark,
         ubody_benchmark=args.ubody_benchmark,
+        lr_mult=args.lr_mult,
+        phase1_epochs=args.phase1_epochs,
+        phase1_train_hand_regressor=not args.no_phase1_hand_regressor,
+        train_face_modules=args.train_face_modules,
+        use_weighted_dataset_sampling=not args.disable_weighted_dataset_sampling,
+        posnet_lr_mult=args.posnet_lr_mult,
+        posnet_grad_clip=args.posnet_grad_clip,
     )
 
-    # 如果 cfg 中没有 lr_mult，手动设置
-    if not hasattr(cfg, 'lr_mult'):
-        cfg.lr_mult = args.lr_mult
+    if cfg.decoder_setting != 'pytorch':
+        raise ValueError("Current training phase/freeze code requires --decoder_setting pytorch")
+
+    if args.bedlam_max_samples is not None:
+        cfg.bedlam_max_samples = args.bedlam_max_samples
+    if args.interhand_max_samples is not None:
+        cfg.interhand_max_samples = args.interhand_max_samples
+    if args.bedlam_use_hand_roi_quality:
+        cfg.bedlam_use_hand_roi_quality = True
+    if args.bedlam_no_hand_img_loss:
+        cfg.bedlam_supervise_hand_img = False
+    if args.use_hand_rotmat_pose_loss:
+        cfg.use_hand_rotmat_pose_loss = True
+    if args.hand_rotmat_pose_loss_weight is not None:
+        cfg.hand_rotmat_pose_loss_weight = args.hand_rotmat_pose_loss_weight
 
     if args.continue_train and args.continue_train_path:
         cfg.continue_train_path = args.continue_train_path
@@ -77,6 +299,9 @@ def main():
     trainer.logger.info(f'  🔥 训练模块: {trainer.model.module.trainable_module_names}')
     trainer.logger.info(f'  📈 学习率: {cfg.lr} (新模块), '
                         f'{cfg.lr * cfg.lr_mult} (回归网络)')
+    trainer.logger.info(f'  Phase 1 epochs: {cfg.phase1_epochs}, '
+                        f'phase1 hand_regressor: {cfg.phase1_train_hand_regressor}, '
+                        f'train face modules: {cfg.train_face_modules}')
     trainer.logger.info(f'  📦 Batch size: {cfg.train_batch_size} x {cfg.num_gpus} GPU')
     trainer.logger.info(f'  🔄 Epochs: {trainer.start_epoch} → {cfg.end_epoch}')
     trainer.logger.info('=' * 60 + '\n')
@@ -85,45 +310,15 @@ def main():
     #  训练循环
     # ================================================================
     print('### Start training ###')
+    phase1_end_epoch = min(max(int(cfg.phase1_epochs), 0), cfg.end_epoch)
+    active_phase = None
     for epoch in range(trainer.start_epoch, cfg.end_epoch):
-        # ---- 切换训练阶段 ----
-        if epoch < PHASE1_EPOCHS:
-            if trainer.model.module.training_phase != 1:
-                trainer.model.module.set_training_phase(1)
-                # Phase 1 的 optimizer：只包含 position_net + decoder
-                trainer.optimizer = torch.optim.Adam([
-                    {'params': list(trainer.model.module.hand_position_net.parameters()) +
-                            list(trainer.model.module.hand_decoder.parameters()) +
-                            list(trainer.model.module.face_position_net.parameters()) +
-                            list(trainer.model.module.face_decoder.parameters()),
-                    'lr': cfg.lr}
-                ])
-                trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    trainer.optimizer, 
-                    PHASE1_EPOCHS * trainer.itr_per_epoch,
-                    eta_min=1e-6
-                )
-                trainer.logger.info(f"=== Phase 1: epoch {epoch} ===")
-        else:
-            if trainer.model.module.training_phase != 2:
-                trainer.model.module.set_training_phase(2)
-                # Phase 2 的 optimizer：新模块 + regressor（小学习率）
-                trainer.optimizer = torch.optim.Adam([
-                    {'params': list(trainer.model.module.hand_position_net.parameters()) +
-                            list(trainer.model.module.hand_decoder.parameters()) +
-                            list(trainer.model.module.face_position_net.parameters()) +
-                            list(trainer.model.module.face_decoder.parameters()),
-                    'lr': cfg.lr * 0.1},  # Phase 2 新模块也降低学习率
-                    {'params': list(trainer.model.module.hand_regressor.parameters()) +
-                            list(trainer.model.module.face_regressor.parameters()),
-                    'lr': cfg.lr * 0.001},  # regressor 用更小的学习率
-                ])
-                trainer.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    trainer.optimizer,
-                    PHASE2_EPOCHS * trainer.itr_per_epoch,
-                    eta_min=1e-7
-                )
-                trainer.logger.info(f"=== Phase 2: epoch {epoch} ===")
+        trainer.cur_epoch = epoch
+        phase = 1 if epoch < phase1_end_epoch else 2
+        if phase != active_phase:
+            remaining_epochs = (phase1_end_epoch - epoch) if phase == 1 else (cfg.end_epoch - epoch)
+            _configure_training_phase(trainer, phase, remaining_epochs)
+            active_phase = phase
 
         trainer.tot_timer.tic()
         trainer.read_timer.tic()
@@ -135,25 +330,32 @@ def main():
             # ---- Forward ----
             trainer.optimizer.zero_grad()
             loss = trainer.model(inputs, targets, meta_info, 'train')
+            # split per-sample losses by dataset source before reducing to scalars
+            per_source = None
+            if (itr + 1) % cfg.print_iters == 0:
+                per_source = _per_source_losses(loss, meta_info)
             loss = {k: loss[k].mean() for k in loss}
 
             # ---- Backward ----
-            total_loss = sum(loss[k] for k in loss)
+            # Keys prefixed '_' are diagnostics (e.g. xy/z splits) and must NOT
+            # be added to the backward objective, or they would double-count.
+            total_loss = sum(loss[k] for k in loss if not k.startswith('_'))
+            _raise_nonfinite_loss(loss, total_loss, meta_info, trainer.logger, epoch, itr)
             total_loss.backward()
 
             # ---- 梯度裁剪（防止新模块初期梯度爆炸）----
+            # position_nets (soft-argmax, diverges mid-epoch) get a separate,
+            # tighter clip; everything else uses the global grad_clip. Clipping
+            # the two disjoint sets independently avoids double-clipping posnet.
+            if cfg.posnet_grad_clip > 0:
+                posnet_params = _grad_params_for_groups(trainer.optimizer, {'position_nets'})
+                if posnet_params:
+                    torch.nn.utils.clip_grad_norm_(posnet_params, max_norm=cfg.posnet_grad_clip)
             if args.grad_clip > 0:
-                trainable_params = []
-                for module in trainer.model.module.trainable_modules:
-                    trainable_params.extend(
-                        [p for p in module.parameters() if p.requires_grad and p.grad is not None]
-                    )
-                for module in trainer.model.module.special_trainable_modules:
-                    trainable_params.extend(
-                        [p for p in module.parameters() if p.requires_grad and p.grad is not None]
-                    )
-                if trainable_params:
-                    torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=args.grad_clip)
+                other_params = _grad_params_for_groups(
+                    trainer.optimizer, {'hand_face_new_modules', 'regressors'})
+                if other_params:
+                    torch.nn.utils.clip_grad_norm_(other_params, max_norm=args.grad_clip)
 
             trainer.optimizer.step()
             trainer.scheduler.step()
@@ -171,8 +373,21 @@ def main():
                     ),
                     '%.2fh/epoch' % (trainer.tot_timer.average_time / 3600. * trainer.itr_per_epoch),
                 ]
-                screen += ['%s: %.4f' % ('loss_' + k, v.detach()) for k, v in loss.items()]
+                if 'is_interhand' in meta_info and 'is_bedlam' in meta_info:
+                    screen += [
+                        'batch_interhand: %.0f' % meta_info['is_interhand'].sum().detach().cpu().item(),
+                        'batch_bedlam: %.0f' % meta_info['is_bedlam'].sum().detach().cpu().item(),
+                    ]
+                screen += ['%s: %.4f' % ('loss_' + k.lstrip('_'), v.detach()) for k, v in loss.items()]
                 trainer.logger.info(' '.join(screen))
+                if per_source is not None:
+                    for src_name in ('interhand', 'bedlam'):
+                        src_losses = per_source.get(src_name, {})
+                        if src_losses:
+                            line = ['  [%s]' % src_name] + [
+                                '%s: %.4f' % (k.lstrip('_'), val) for k, val in src_losses.items()
+                            ]
+                            trainer.logger.info(' '.join(line))
 
             # ---- 首个 iteration 检查梯度流 ----
             if epoch == trainer.start_epoch and itr == 0:
@@ -181,6 +396,20 @@ def main():
             trainer.tot_timer.toc()
             trainer.tot_timer.tic()
             trainer.read_timer.tic()
+
+        # ---- 每 epoch 可视化检查面板 (InterHand 框/crop + BEDLAM mesh) ----
+        if getattr(cfg, 'vis_epoch_panel', True) and getattr(trainer, 'trainset_by_name', None):
+            try:
+                from common.utils.train_vis import save_epoch_panels
+                save_epoch_panels(
+                    trainer.model,
+                    trainer.trainset_by_name,
+                    epoch,
+                    os.path.join(cfg.vis_dir, 'epoch_panel'),
+                    logger=trainer.logger,
+                )
+            except Exception as exc:
+                trainer.logger.info('[epoch-vis] skipped: %s' % exc)
 
         # ---- 保存模型 ----
         if epoch % 1 == 0 or epoch == (cfg.end_epoch - 1):
@@ -210,7 +439,7 @@ def _check_gradient_flow(trainer):
                 frozen_with_grad += 1
                 trainer.logger.error(f"  ❌ {name}: 冻结模块不应有梯度!")
 
-        elif module_name in trainer.model.module.trainable_module_names:
+        elif module_name in trainer.model.module.trainable_module_names and param.requires_grad:
             if param.grad is None:
                 trainable_no_grad += 1
                 trainer.logger.warning(f"  ⚠️  {name}: 训练模块梯度为 None")

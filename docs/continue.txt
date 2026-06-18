@@ -1,0 +1,184 @@
+# InterHand + BEDLAM 微调交接记录
+
+更新时间：2026-06-18（第五次更新）
+当前状态：B 类·精确版修复已落地并**启动全量验证 run**（`output/interhand_bedlam_b`）；
+本会话另实现了 rotation-matrix hand pose loss（默认关）、修了 InterHand 加载 OOM、
+给两个 loader 加了坏图兜底。验证 run 关会话前健康跑到 epoch 0 尾，**尚未到崩点 epoch2-itr429**。
+
+## 当前进度（重开先看这里）
+
+**主 run**：`output/interhand_bedlam_b`（命令见「三」，带 `--bedlam_no_hand_img_loss`）。
+关会话前：已健康跑过 epoch 0 全程、进入 epoch 1 早段（itr~369/2703）（`joint_img`≈0.2；
+`[bedlam] joint_img`≈0.20 只剩 body 项、`[interhand]`≈0.34；0 NaN / 0 traceback / 0 坏图 fallback），
+**但还没到崩点 epoch2-itr429**，故尚不能下结论（A 类那次 epoch0–1 也健康、epoch2 才崩）。
+
+**重开第一步**：读 `output/interhand_bedlam_b/log/train_logs.txt` 判定：
+1. 已过 `epoch2 itr~429`（全局 ~5825）且 `joint_img` 仍 < ~0.5、没跳 3+
+   → **B 类修复成功、根因坐实** → 进「八、验证通过后的下一步」。
+2. `epoch2` 附近 `joint_img` 又跳 3+ → 热图头本身不稳 → 走 curriculum（见「五」第 3 条）。
+3. 进程已死/中断 → 先排查是否坏图以外的崩；重跑或从最近 snapshot 续训
+   （`--continue_train --continue_train_path <snap>`，且**继续带 `--bedlam_no_hand_img_loss`**）。
+
+## 项目背景
+
+仓库 `/workspace/myosx`，OSX 研究分支。目标：InterHand26M + BEDLAM 混合微调，优先提升
+手部细节，同时不破坏 BEDLAM 的全身 SMPL-X 能力。训练走 `decoder_setting=pytorch` 路径
+（`main/model_core.py` 的 `Model`）。
+
+- 核心代码：`main/{train.py,model_core.py,config.py}`、`data/{InterHand26M,BEDLAM}/*.py`、
+  `common/nets/loss.py`、`common/utils/train_vis.py`。
+- 角色分工：InterHand = 只教手（hand-only，GT 框注入 ROI）；BEDLAM = 全身 SMPL-X 排练 + 防遗忘。
+- 共享手部分支：`hand_position_net`(DCNv4 热图头) → `hand_decoder` → `hand_regressor`。
+  三者被 InterHand/BEDLAM 共用，反传是整个 batch 的总 loss（分源只是日志拆分）。
+
+## 一、核心问题与根因（已验证）
+
+**症状**：混训到 `epoch2 itr~429`（全局 itr ~5825），`loss_joint_img` / `loss_smplx_joint_img`
+从 ~0.8 **一步跳到 3+ 并永久卡住**（750+ itr 不恢复），InterHand 与 BEDLAM 一起崩。
+其余 loss 全程稳定 → 是塌进退化盆地，不是抖动，也不是单个坏 batch。
+
+**分源日志（itr1129，决定性证据）**：
+
+| loss | [interhand] | [bedlam] | |
+|---|---|---|---|
+| joint_img / smplx_joint_img | 2.22 | **4.38** | ✅ 崩 |
+| joint_proj | 0.16 | 0.25 | 稳 |
+| joint_cam / smplx_joint_cam | 0.007 | 0.024 | 稳 |
+| smplx_pose | 0.068 | 0.19 | 稳 |
+
+**根因**：`hand_position_net` 的 soft-argmax 热图输出 `hand_joint_img`，在 `model_core.py:487`
+（传 decoder 前）和 `:492`（传 regressor 前）都被 `.detach()`，**唯一未 detach 的去处**是 `:517`
+拼进 `joint_img` → `loss['joint_img']`(`:640`) / `loss['smplx_joint_img']`(`:645`)。
+即**这两项是热图头的唯一梯度源**。日志现象 = 代码链路：只有它俩崩 ⇒ 热图头被这两项拖崩。
+BEDLAM(4.4) 是更重的污染源；因共享同一手部分支、反传整 batch 总 loss，BEDLAM 把共享参数推偏后
+InterHand 也跟着崩。
+
+**毒源机制**：热图头吃的是 `img_feat`(1024,16,12) 上的 ROI crop。BEDLAM 全身图里手只占
+~1 个特征像素，crop 出来是糊的、无手部结构 → 让 soft-argmax 在 16×16×16 网格上定位 21 个关节
+属**病态回归** → 高方差非泛化梯度累积，把共享热图头推进退化盆地（L1 soft-argmax 进去就回不来）。
+InterHand（GT 框、手占满画面）有真实结构，单独训不崩。
+注：动态 coverage 门控判的是「关节是否在框内」，**框对但很小**的 BEDLAM 手能过门控、
+特征仍是糊的，所以门控拦不住这个问题。
+
+## 二、已落地的修复：B 类·精确版
+
+**思路**：对 BEDLAM 样本，只把**手部** `joint_img` / `smplx_joint_img` 监督置零
+（切断热图头唯一的毒梯度通路），其余全保留。热图头之后只被 InterHand（干净）监督。
+
+**代码改动（3 文件；开关默认 True = 旧行为，零影响其它训练）**：
+
+- `main/config.py`：新增 `bedlam_supervise_hand_img = True`。
+- `main/model_core.py`（loss 段 ~639-647）：当 `bedlam_supervise_hand_img=False` 且 meta 有
+  `is_bedlam` 时，构造「BEDLAM 手部置零」的 trunc 副本 `joint_trunc_img` / `smplx_joint_trunc_img`，
+  **仅**喂给 `joint_img` / `smplx_joint_img`；`joint_proj` 仍用原 coverage-gated `joint_trunc`。
+  实现 `keep = 1 - is_bedlam * hand_joint_mask` 广播相乘（避免链式索引赋值）。
+- `main/train.py`：新增 CLI `--bedlam_no_hand_img_loss` → 置 `cfg.bedlam_supervise_hand_img=False`。
+
+**保留了什么**：BEDLAM 仍经特征通路（`:489` query_init 未 detach）→ decoder → regressor
+贡献**稳定**梯度；`smplx_pose`(含手指姿态)、`smplx_joint_cam`(手 3D)、`joint_cam`、
+BEDLAM 手部 `joint_proj` 全在。BEDLAM 价值几乎无损。
+
+**已验证**：`py_compile` 三文件通过；mask 算术单测通过（BEDLAM 手关节→0、BEDLAM body 保留、
+InterHand 全保留）。全量 GPU 验证 run 已启动（`output/interhand_bedlam_b`），见「当前进度」。
+
+## 三、验证协议（下一步，别再用小 cap/低 lr 自欺）
+
+```bash
+cd /workspace/myosx/main && python train.py \
+    --gpu_ids 0 --lr 2e-4 --lr_mult 0.1 --train_batch_size 64 --num_thread 8 \
+    --end_epoch 14 --phase1_epochs 10 \
+    --exp_name output/interhand_bedlam_b \
+    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+    --encoder_setting osx_l --grad_clip 1.0 --decoder_setting pytorch \
+    --bedlam_use_hand_roi_quality --bedlam_no_hand_img_loss
+```
+
+- **必须原始 lr=2e-4 + 全量数据跑过 epoch2-itr429（全局 ~5825）**。`diag_zsplit` 那次
+  cap=4096 + lr 砍半根本没到崩点，「没崩」是假阴性。
+- 盯：总 `joint_img` 维持 0.6–0.9 不跳 3+；`[bedlam] joint_img` 大降（只剩 body 项，hand 被 mask）；
+  `[interhand] joint_img` 继续降；`joint_proj`/`joint_cam`/`smplx_pose` 维持基线。
+- **同时是判别实验**：过了 itr429 仍稳 → 坐实 BEDLAM 手部局部监督是根因；若仍崩 → 是热图头本身
+  不稳，升级 curriculum（先 InterHand 单训 `hand_position_net` 收敛存档，再冻结它混入 BEDLAM
+  —— 见「五、弯路」第 3 条，冻结只有此时才合法）。
+
+## 四、已实现的关键能力（累计）
+
+1. InterHand26M + BEDLAM 混训；加权采样 `trainset_3d_sample_prob`（BEDLAM 0.6 / InterHand 0.4），
+   per-worker numpy/random 解相关播种。
+2. BEDLAM flat_hand_mean 兼容：`bedlam_convert_flat_hand_mean=True`，初始化取一次 hand mean、
+   每条记录减去（含双转换 guard）。
+3. InterHand 掩码：hand-only，per-hand wrist-relative 3D，`L/R_Wrist` 3D-cam valid=0，
+   仅 15+15 指关节 pose-valid，shape/expr/face valid=0。
+4. GT 手框注入 ROI：`inject_gt_hand_bbox=True`，对 `is_hand_only` 样本用 GT 框做 ROI crop
+   （绕过冻结 box_net 在 InterHand 上的退化全图框）；box_net 预测保留给 bbox loss。
+5. 动态 BEDLAM hand-ROI 门控：`bedlam_use_hand_roi_quality`，按当前增广后的预测框现场算 coverage，
+   低于阈值否决该手 2D loss。阈值 `coverage_thr=0.6 / min_joints=8`。
+6. 分源日志：按 `is_interhand/is_bedlam` 拆分打印 `[interhand]`/`[bedlam]`。
+7. xy/z 拆分诊断：`_joint_img_xy/_z`、`_smplx_joint_img_xy/_z`（`_` 前缀项不进反传）。
+8. NaN guard：`total_loss` 非 finite 时 backward 前停并打印组成；`CoordLoss/ParamLoss` 做 `nan_to_num`。
+9. A 类稳定化：`posnet_lr_mult=0.25`、`posnet_grad_clip=0.5`，`hand_position_net` 独立分组
+   （lr 5e-5）+ 独立紧裁剪。三分组 `position_nets / hand_face_new_modules / regressors`。
+10. 两阶段：`phase1_epochs=10`，Phase1 训 hand_position_net+decoder+regressor，Phase2 降 lr。
+11. optimizer resume 修复：暂存—延迟恢复，仅当 checkpoint 同 phase 才 `load_state_dict`
+    （跨 phase 分组不同会 mismatch）。
+12. 每 epoch 可视化面板：InterHand 手 crop+点 / BEDLAM mesh，输出 `output/<exp>/vis/epoch_panel/`。
+13. rotation-matrix hand pose loss（**实现，默认关**）：`RotMatParamLoss`（`common/nets/loss.py`，
+    axis-angle→rotmat masked L1），在 `model_core` 接成**附加的、仅 30 个手指关节**项，由
+    `cfg.use_hand_rotmat_pose_loss` / CLI `--use_hand_rotmat_pose_loss`(+`--hand_rotmat_pose_loss_weight`)
+    控制。默认关 = 零影响；开启后手指为 axis-angle+rotmat 双重监督。详见 `code_changes_review.md` §12.1。
+14. 加载健壮性 + 内存：`InterHand26M.py` 不再常驻原始 COCO/joint/MANO 标注（load 完即释放，
+    修掉 OOM 隐患，这是 InterHand loader 大段 diff 的原因）；InterHand 与 BEDLAM 的
+    `__getitem__` 都加了"坏图→有界重采另一条 datalist 样本"兜底（个别损坏/解不开的图不再让 worker 崩；
+    成片损坏会有界抛错而非死循环）。BEDLAM 走 `.pkl` 路径，加载时只查 `osp.isfile` 不解码，
+    所以坏图要靠这个运行时兜底。
+
+## 五、走过的弯路 / 已证伪的假设（别重复）
+
+1. **「z 单独爆」假设——错**。最早以为是 soft-argmax 深度 bin 翻转、只需屏蔽/降权 z_img。
+   实测 epoch2 分源显示 **xy 和 z 一起爆**（xy 常比 z 还大）。不要再做「只处理 z」。
+2. **A 类（降 posnet lr + 紧裁剪）不足以治本**。只把崩点从 epoch1-itr1900 推迟到 epoch2-itr429，
+   没切断毒梯度。保留 A 类当便宜保险即可。
+3. **「冻结 hand_position_net 只训 decoder+regressor」——当前不可行**。pytorch 路径的
+   `hand_position_net` 是 `DCNv4PositionNet`（`model_core.py:757`），**从头随机初始化**
+   （`base.py:361-364` 显式跳过加载，`model_core.py:816-818` 对它 init）。冻结随机热图头 =
+   `joint_img` 永远降不下来、decoder 拿随机 init 坐标。只有先把它训好（curriculum 阶段 A）
+   再冻结才合法。
+4. **静态 npz hand-ROI 门控——已废弃**（见 `bedlam_problems.txt`）。静态文件在固定视角算、
+   训练却随机 flip/scale/rot，必然 mismatch。已改为动态门控。
+
+## 六、已知遗留问题
+
+- InterHand loader 个别 joint 投影非 finite，loss 层已兜底；更干净是在
+  `data/InterHand26M/InterHand26M.py` 把非 finite 对应 valid/trunc 置 0。
+- `test.py:223` 仍有 `if itr >= 50: break` 的 debug 限制 → 评估只跑 50 个 batch（partial），
+  正式评估前移除或改成可配置。
+- 临时文件可清理：`main/_tmp_pg_test.py`；仓库根目录 4 个 `core.*` coredump。
+- 数据完整性：本会话 InterHand + BEDLAM 都出现过个别坏图（已被坏图兜底，不崩）。若坏图成片
+  （下载/同步未完成），等于有效样本变少 + 重采有偏，建议单独扫一遍两数据集图片可读性确认。
+
+（注：旧版本担心的 `Tester`/`Demoer` 因 `module.` 前缀 load 0 张量的问题已解决——
+现在 `_load_lightweight_trained_modules`（`base.py:193-200`）对每个 key 带/不带前缀都试；
+首次评估时确认日志"成功覆盖了 N 个"的 N 非 0 即可。详见 `code_changes_review.md` §12.1。)
+
+## 七、历史 run / snapshot 索引
+
+- `output/interhand_bedlam_b`：**当前主 run** —— B 类·精确版全量验证（本会话启动，带
+  `--bedlam_no_hand_img_loss`）。关会话时在 epoch 1 早段、健康、未到崩点。重开先看它（见「当前进度」）。
+- `output/interhand_bedlam`：第一次崩（epoch1 后段）。`snapshot_1` 是崩后权重，**不要续训**。
+- `output/interhand_bedlam_a`：A 类全量 run，epoch2-itr429 崩（已停，进程已不在）。日志保留作对照。
+- `output/diag_zsplit`：lr=1e-4 + cap=4096 短跑，没到崩点（假阴性），仅用于看健康态 xy/z 模式。
+
+## 八、验证通过后的下一步（B 类确认成功才做）
+
+1. 按 `interhand_bedlam_training_plan.md` 的 Stage 1–4 推进（BEDLAM warmup → 60:40 →
+   50:50 → 可选 polish），用分源日志 + 每 epoch 可视化面板盯其 §8.3 验证门槛
+   （InterHand 手 loss 降、BEDLAM 全身 loss 不涨 >5–10%、无左右手翻转）。
+2. 评估前先处理「六」里的 `test.py:223` 50-batch 限制；首次评估确认 snapshot 真加载（日志 N>0）。
+3. 可选实验：开 `--use_hand_rotmat_pose_loss` 看手指姿态是否更稳（与不开做 A/B）。
+
+## 参考文档
+
+- `docs/interhand_bedlam_training_plan.md`
+- `docs/bedlam_smplx_compatibility.md`
+- `docs/bedlam_problems.txt`
+- `docs/interhand_bedlam_code_changes_review.md`

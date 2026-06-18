@@ -1,6 +1,9 @@
 import os.path as osp
 import math
 import abc
+import random
+import numpy as np
+import torch
 from torch.utils.data import DataLoader
 import torch.optim
 import torch.nn as nn
@@ -30,11 +33,33 @@ for i in range(len(cfg.trainset_2d)):
     exec('from ' + cfg.trainset_2d[i] + ' import ' + cfg.trainset_2d[i])
 exec('from ' + cfg.testset + ' import ' + cfg.testset)
 
+
+def _seed_worker(worker_id):
+    """Give every DataLoader worker an independent RNG state.
+
+    PyTorch seeds python ``random`` and ``torch`` per worker, but NOT numpy.
+    ``MultipleDatasets`` uses ``np.random.choice`` for weighted dataset
+    selection, so without this every worker would draw the same dataset
+    sequence (correlated sampling). We derive all three RNG seeds from the
+    per-worker torch seed so the mixing stays decorrelated across workers.
+    """
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 class Base(object):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, log_name='logs.txt'):
         self.cur_epoch = 0
+        # Optimizer state recovered from a resume checkpoint is stashed here
+        # instead of loaded immediately: the per-phase optimizer is rebuilt in
+        # train.py's _configure_training_phase, which would discard any state
+        # loaded onto the optimizer created in _make_model. _configure_training_phase
+        # consumes these (and clears them) once the matching-phase optimizer exists.
+        self.resume_optimizer_state = None
+        self.resume_epoch = None
 
         # timer
         self.tot_timer = Timer()
@@ -51,6 +76,141 @@ class Base(object):
     @abc.abstractmethod
     def _make_model(self):
         return
+
+    def _load_pretrained_pytorch_model(self, model, ckpt_path):
+        """Load the original pretrained OSX checkpoint into a bare PyTorch model."""
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+        if 'network' in ckpt:
+            src_state_dict = ckpt['network']
+        elif 'state_dict' in ckpt:
+            src_state_dict = ckpt['state_dict']
+        elif 'model' in ckpt:
+            src_state_dict = ckpt['model']
+        else:
+            src_state_dict = ckpt
+
+        # Bare test/demo models do not carry the DataParallel ``module.`` prefix.
+        src_state_dict = {k.replace('module.', '', 1): v for k, v in src_state_dict.items()}
+        model_state_dict = model.state_dict()
+        new_state_dict = OrderedDict()
+
+        exact_match_count = 0
+        mapped_count = 0
+        shape_mismatch = []
+
+        for model_key in model_state_dict.keys():
+            if model_key == 'encoder.pos_embed':
+                target_shape = model_state_dict[model_key].shape
+                v = src_state_dict.get(model_key)
+                if v is not None and v.shape != target_shape:
+                    cls_pos = v[:, 0:1, :]
+                    patch_pos = v[:, 1:, :]
+                    task_pos = cls_pos.repeat(1, 31, 1)
+                    v = torch.cat([task_pos, patch_pos], dim=1)
+                    self.logger.info(f"✨ 自动扩充 pos_embed 形状: (1,193,1024) -> {v.shape}")
+                if v is not None and v.shape == target_shape:
+                    new_state_dict[model_key] = v
+                continue
+
+            if model_key in src_state_dict:
+                v = src_state_dict[model_key]
+                if v.shape == model_state_dict[model_key].shape:
+                    new_state_dict[model_key] = v
+                    exact_match_count += 1
+                else:
+                    shape_mismatch.append(
+                        f"{model_key}: ckpt {v.shape} != model {model_state_dict[model_key].shape}"
+                    )
+                continue
+
+            if 'encoder.norm.' in model_key:
+                src_key = model_key.replace('encoder.norm.', 'encoder.last_norm.')
+                if src_key in src_state_dict and src_state_dict[src_key].shape == model_state_dict[model_key].shape:
+                    new_state_dict[model_key] = src_state_dict[src_key]
+                    mapped_count += 1
+                    continue
+
+            if 'decoder.layers.' in model_key:
+                src_key = model_key
+                if 'hand_decoder.layers.' in model_key:
+                    src_key = src_key.replace(
+                        'hand_decoder.layers.',
+                        'hand_decoder.keypoint_head.transformer.decoder.layers.',
+                    )
+                elif 'face_decoder.layers.' in model_key:
+                    src_key = src_key.replace(
+                        'face_decoder.layers.',
+                        'face_decoder.keypoint_head.transformer.decoder.layers.',
+                    )
+
+                src_key = src_key.replace('.self_attn.in_proj_', '.attentions.0.attn.in_proj_')
+                src_key = src_key.replace('.self_attn.out_proj.', '.attentions.0.attn.out_proj.')
+                src_key = src_key.replace('.cross_attn.sampling_offsets.', '.attentions.1.sampling_offsets.')
+                src_key = src_key.replace('.cross_attn.attention_weights.', '.attentions.1.attention_weights.')
+                src_key = src_key.replace('.cross_attn.value_proj.weight', '.attentions.1.value_proj_weight.weight')
+                src_key = src_key.replace('.cross_attn.value_proj.bias', '.attentions.1.value_proj_bias.weight')
+                src_key = src_key.replace('.cross_attn.output_proj.', '.attentions.1.output_proj.')
+                src_key = src_key.replace('.linear1.', '.ffns.0.layers.0.0.')
+                src_key = src_key.replace('.linear2.', '.ffns.0.layers.1.')
+                src_key = src_key.replace('.norm1.', '.norms.0.')
+                src_key = src_key.replace('.norm2.', '.norms.1.')
+                src_key = src_key.replace('.norm3.', '.norms.2.')
+
+                if src_key in src_state_dict:
+                    v = src_state_dict[src_key]
+                    if v.shape == model_state_dict[model_key].shape:
+                        new_state_dict[model_key] = v
+                        mapped_count += 1
+
+        missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+
+        self.logger.info(f"从 {ckpt_path} 加载预训练权重:")
+        self.logger.info(f"  ✅ 精确匹配加载: {exact_match_count} 个张量")
+        self.logger.info(f"  🔗 智能映射加载: {mapped_count} 个张量")
+        if shape_mismatch:
+            self.logger.warning(f"  ⚠️  形状不匹配: {len(shape_mismatch)} 个")
+            for s in shape_mismatch[:5]:
+                self.logger.warning(f"     {s}")
+
+        real_missing = [m for m in missing if 'decoder' not in m]
+        if real_missing or unexpected:
+            self.logger.warning(f"  ⚠️  仍有未覆盖参数: missing={len(real_missing)} unexpected={len(unexpected)}")
+        else:
+            self.logger.info("  🎯 骨干网络与可映射解码器权重均已对齐。")
+
+    def _load_lightweight_trained_modules(self, model, ckpt_path):
+        """Load a fine-tuned lightweight snapshot onto either bare or DP models."""
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+        if 'network' not in ckpt:
+            raise Exception("Checkpoint 中不存在 'network' 字段，请检查是否正确加载")
+
+        model_state_dict = model.state_dict()
+        trained_dict = ckpt['network']
+        loaded = 0
+        skipped = 0
+
+        for k, v in trained_dict.items():
+            candidates = [k]
+            if k.startswith('module.'):
+                candidates.append(k.replace('module.', '', 1))
+            else:
+                candidates.append('module.' + k)
+
+            matched = False
+            for candidate_key in candidates:
+                if candidate_key in model_state_dict and model_state_dict[candidate_key].shape == v.shape:
+                    model_state_dict[candidate_key] = v
+                    loaded += 1
+                    matched = True
+                    break
+
+            if not matched:
+                skipped += 1
+
+        model.load_state_dict(model_state_dict, strict=False)
+        self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
+        if skipped:
+            self.logger.warning(f"  ⚠️  有 {skipped} 个训练张量未能匹配当前模型")
 
 
 class Trainer(Base):
@@ -318,13 +478,14 @@ class Trainer(Base):
             
             self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
 
-        # ---- 加载 optimizer 状态 ----
+        # ---- 暂存 optimizer 状态 ----
+        # 不在此处直接 load：train.py 的 _configure_training_phase 会按 phase
+        # 重建 optimizer（不同分组/lr），会丢弃这里加载的状态。改为暂存，等
+        # 进入与 checkpoint 同 phase 的 optimizer 建好后再恢复。
         if 'optimizer' in ckpt:
-            try:
-                optimizer.load_state_dict(ckpt['optimizer'])
-                self.logger.info(f"  成功恢复 optimizer 状态")
-            except Exception as e:
-                self.logger.warning(f"⚠️ 无法恢复 optimizer 状态: {e}")
+            self.resume_optimizer_state = ckpt['optimizer']
+            self.resume_epoch = ckpt.get('epoch', start_epoch - 1)
+            self.logger.info("  已暂存 optimizer 状态，待 phase optimizer 重建后恢复")
 
         self.logger.info(f"从 epoch {start_epoch} 准备继续训练!")
         return start_epoch, model, optimizer
@@ -340,17 +501,44 @@ class Trainer(Base):
     # ================================================================
     #  数据加载（不变）
     # ================================================================
+    def _get_dataset_sample_prob(self, dataset_names, prob_cfg):
+        if not prob_cfg:
+            return None
+        missing = [name for name in dataset_names if name not in prob_cfg]
+        if missing:
+            raise ValueError("Missing sample probabilities for datasets: %s" % ", ".join(missing))
+        sample_prob = np.asarray([prob_cfg[name] for name in dataset_names], dtype=np.float32)
+        if np.any(sample_prob < 0) or sample_prob.sum() <= 0:
+            raise ValueError("Dataset sample probabilities must be non-negative and sum to a positive value")
+        return sample_prob / sample_prob.sum()
+
     def _make_batch_generator(self):
         self.logger.info("Creating dataset...")
         trainset3d_loader = []
+        self.trainset_by_name = {}
         for i in range(len(cfg.trainset_3d)):
-            trainset3d_loader.append(eval(cfg.trainset_3d[i])(transforms.ToTensor(), "train"))
+            db = eval(cfg.trainset_3d[i])(transforms.ToTensor(), "train")
+            trainset3d_loader.append(db)
+            self.trainset_by_name[cfg.trainset_3d[i]] = db
         trainset2d_loader = []
         for i in range(len(cfg.trainset_2d)):
             trainset2d_loader.append(eval(cfg.trainset_2d[i])(transforms.ToTensor(), "train"))
         valid_loader_num = 0
         if len(trainset3d_loader) > 0:
-            trainset3d_loader = [MultipleDatasets(trainset3d_loader, make_same_len=False)]
+            sample_prob = None
+            if getattr(cfg, "use_weighted_dataset_sampling", False) and len(trainset3d_loader) > 1:
+                sample_prob = self._get_dataset_sample_prob(
+                    cfg.trainset_3d,
+                    getattr(cfg, "trainset_3d_sample_prob", None),
+                )
+                prob_str = ", ".join(
+                    "%s=%.3f" % (name, prob)
+                    for name, prob in zip(cfg.trainset_3d, sample_prob)
+                )
+                self.logger.info("Using weighted 3D dataset sampling: %s" % prob_str)
+            trainset3d_loader = [
+                MultipleDatasets(trainset3d_loader, make_same_len=False, sample_prob=sample_prob)
+            ]
             valid_loader_num += 1
         else:
             trainset3d_loader = []
@@ -373,8 +561,9 @@ class Trainer(Base):
             num_workers=cfg.num_thread,
             pin_memory=True,
             drop_last=True,
-            persistent_workers=True,    # 保持 worker 存活
-            prefetch_factor=3,          # 内存充足，多预取
+            persistent_workers=cfg.num_thread > 0,
+            prefetch_factor=3 if cfg.num_thread > 0 else None,
+            worker_init_fn=_seed_worker if cfg.num_thread > 0 else None,
         )
 
     # ================================================================
@@ -503,168 +692,12 @@ class Tester(Base):
             return model
         # ————————————————————————————————————————
 
-        # —————————————— 新代码 (纯 PyTorch 实现) ——————————————————
-        # 假设 model 已经是你用 get_model() 获取到的纯 PyTorch 模型
         model = get_model('test1')
         model = model.cuda()
-        
-        from collections import OrderedDict
-
-        # 最终修正版：基于真实 Key 结构的精确映射
-        # ==========================================================================
-        print(f"Loading checkpoint from {cfg.pretrained_model_path} ...")
-        ckpt = torch.load(cfg.pretrained_model_path, map_location='cpu')
-        src_state_dict = ckpt['network'] if 'network' in ckpt else ckpt['state_dict']
-        
-        # 1. 预处理：去掉 module. 前缀
-        src_state_dict = {k.replace('module.', ''): v for k, v in src_state_dict.items()}
-        new_state_dict = OrderedDict()
-        
-        print("开始执行精确映射...")
-        print("源模型 Key 数量：", len(src_state_dict))
-        print("目标模型 Key 数量：", len(model.state_dict()))
-
-
-        # 获取当前 PyTorch 模型的 state_dict
-        model_state_dict = model.state_dict()
-
-        # 统计用
-        exact_match_count = 0
-        mapped_count = 0
-
-        print("开始精准匹配与智能映射权重...")
-
-        for model_key in model_state_dict.keys():
-            
-            # -----------------------------------------------------------
-            # [特殊处理 1] pos_embed 形状适配 (Task Token + Patch Token)
-            # -----------------------------------------------------------
-            if 'encoder.pos_embed' == model_key:
-                target_shape = model_state_dict[model_key].shape
-                v = src_state_dict.get(model_key)
-                if v is not None and v.shape != target_shape:
-                    # 严格按照你旧代码的顺序：Task Token 在前，Patch Token 在后
-                    cls_pos = v[:, 0:1, :]
-                    patch_pos = v[:, 1:, :]
-                    task_pos = cls_pos.repeat(1, 31, 1)
-                    v = torch.cat([task_pos, patch_pos], dim=1)
-                    print(f"  [Encoder] Resized pos_embed to {v.shape}")
-                new_state_dict[model_key] = v
-                continue
-
-            # -----------------------------------------------------------
-            # [策略 A] 精确匹配 (涵盖了所有的 Backbone, ROI, BN层等)
-            # -----------------------------------------------------------
-            if model_key in src_state_dict:
-                v = src_state_dict[model_key]
-                if v.shape == model_state_dict[model_key].shape:
-                    new_state_dict[model_key] = v
-                    exact_match_count += 1
-                else:
-                    print(f"  [Shape Mismatch] {model_key}: ckpt {v.shape} != model {model_state_dict[model_key].shape}")
-                continue
-
-            # -----------------------------------------------------------
-            # [策略 B] Encoder 的 last_norm 映射
-            # -----------------------------------------------------------
-            if 'encoder.norm.' in model_key:
-                src_key = model_key.replace('encoder.norm.', 'encoder.last_norm.')
-                if src_key in src_state_dict and src_state_dict[src_key].shape == model_state_dict[model_key].shape:
-                    new_state_dict[model_key] = src_state_dict[src_key]
-                    mapped_count += 1
-                    continue
-
-            # -----------------------------------------------------------
-            # [策略 C] Decoder Transformer 的智能映射 (极其重要，防止手脸扭曲)
-            # -----------------------------------------------------------
-            if 'decoder.layers.' in model_key:
-                src_key = model_key
-                # 1. 补全 MMCV 的 Transformer 路径
-                if 'hand_decoder.layers.' in model_key:
-                    src_key = src_key.replace('hand_decoder.layers.', 'hand_decoder.keypoint_head.transformer.decoder.layers.')
-                elif 'face_decoder.layers.' in model_key:
-                    src_key = src_key.replace('face_decoder.layers.', 'face_decoder.keypoint_head.transformer.decoder.layers.')
-                    
-                # 2. 映射 Self-Attention
-                src_key = src_key.replace('.self_attn.in_proj_', '.attentions.0.attn.in_proj_')
-                src_key = src_key.replace('.self_attn.out_proj.', '.attentions.0.attn.out_proj.')
-                
-                # 3. 映射 Cross-Attention
-                src_key = src_key.replace('.cross_attn.sampling_offsets.', '.attentions.1.sampling_offsets.')
-                src_key = src_key.replace('.cross_attn.attention_weights.', '.attentions.1.attention_weights.')
-                # MMCV 的 value_proj 命名非常特别，带有 weight 和 bias 后缀
-                src_key = src_key.replace('.cross_attn.value_proj.weight', '.attentions.1.value_proj_weight.weight')
-                src_key = src_key.replace('.cross_attn.value_proj.bias', '.attentions.1.value_proj_bias.weight') # MMCV bias也叫weight
-                src_key = src_key.replace('.cross_attn.output_proj.', '.attentions.1.output_proj.')
-                
-                # 4. 映射 FFN 和 Norm
-                src_key = src_key.replace('.linear1.', '.ffns.0.layers.0.0.')
-                src_key = src_key.replace('.linear2.', '.ffns.0.layers.1.')
-                src_key = src_key.replace('.norm1.', '.norms.0.')
-                src_key = src_key.replace('.norm2.', '.norms.1.')
-                src_key = src_key.replace('.norm3.', '.norms.2.')
-
-                # 尝试从源字典中获取并校验形状
-                if src_key in src_state_dict:
-                    v = src_state_dict[src_key]
-                    if v.shape == model_state_dict[model_key].shape:
-                        new_state_dict[model_key] = v
-                        mapped_count += 1
-                continue
-
-        # 执行最终加载
-        missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
-
-        print("\n" + "="*40)
-        print("✅ 权重加载完成报告:")
-        print("="*40)
-        print(f"🎯 精确匹配加载: {exact_match_count} 个张量 (含 BN 层的统计参数)")
-        print(f"🔗 智能映射加载: {mapped_count} 个张量 (主要为 Decoder 的 Transformer 层)")
-
-        # 帮你排查除了你还没重写完的部分，是否还有其他遗漏
-        real_missing = [m for m in missing if not ('decoder' in m)]
-        if real_missing or unexpected:
-            print(f"\n⚠️ 警告: 以下基础网络部分存在未加载的参数 (请检查拼写):")
-            for m in real_missing:
-                print(f"  - {m}")
-            for m in unexpected:
-                print(f"  - {m}")
-        else:
-            print("\n🎉 完美！骨干网络已全部精准对齐，Decoder 的核心 Transformer 层也已成功映射，不再是随机噪声！")
-
-
-        # --- 步骤 2: 加载自己保存的轻量级 Checkpoint ---
-        ckpt_path = cfg.continue_train_path # 假设你配置里指定了要恢复的 snapshot 路径
-        self.logger.info(f"Resume Step 2: Loading trained modules from {ckpt_path}...")
-        ckpt = torch.load(ckpt_path, map_location='cpu')
-
-        if 'network' in ckpt:
-            model_dict = model.state_dict()
-            trained_dict = ckpt['network']  # 这里面现在只有 trainable 部分
-
-            loaded = 0
-            for k, v in trained_dict.items():
-                if k in model_dict and model_dict[k].shape == v.shape:
-                    model_dict[k] = v
-                    loaded += 1
-
-            # strict=False 允许只覆盖可训练部分，不动刚刚加载好的 Backbone
-            missing, unexpected = model.load_state_dict(model_dict, strict=False) 
-            self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
-
-            if missing:
-                print(f"\n⚠️ 警告: 以下可训练网络部分存在未加载的参数 (请检查拼写):")
-                for m in missing:
-                    print(f"  - {m}")
-            if unexpected:
-                print(f"仍有未预期参数！！！！！！")
-                for m in unexpected:
-                    print(f"  - {m}")
-            if not missing and not unexpected:
-                print("\n🎉 完美！可训练网络已全部加载")
-        else:
-            raise Exception("Checkpoint 中不存在 'network' 字段，请检查是否正确加载")
-        
+        self._load_pretrained_pytorch_model(model, cfg.pretrained_model_path)
+        if cfg.continue_train_path:
+            self.logger.info(f"Resume Step 2: Loading trained modules from {cfg.continue_train_path}...")
+            self._load_lightweight_trained_modules(model, cfg.continue_train_path)
         model.eval()
         self.model = model
 
@@ -705,172 +738,11 @@ class Demoer(Base):
             return model
         # ————————————————————————————————————————
 
-        # 假设 model 已经是你用 get_model() 获取到的纯 PyTorch 模型
         model = get_model('test1')
-        with open("my_model_params.txt", "w", encoding="utf-8") as f:
-            total = 0
-            for name, param in model.named_parameters():
-                shape = tuple(param.shape)
-                num = param.numel()
-                total += num
-                f.write(f"{name}\t{shape}\t{num}\n")
-            f.write(f"\nTotal params: {total}\n")
         model = model.cuda()
-        print(f"box_net conv1:{model.box_net.deconv[1]}")
-        from collections import OrderedDict
-
-        # 最终修正版：基于真实 Key 结构的精确映射
-        # ==========================================================================
-        print(f"Loading checkpoint from {cfg.pretrained_model_path} ...")
-        ckpt = torch.load(cfg.pretrained_model_path, map_location='cpu')
-        src_state_dict = ckpt['network'] if 'network' in ckpt else ckpt['state_dict']
-        
-        # 1. 预处理：去掉 module. 前缀
-        src_state_dict = {k.replace('module.', ''): v for k, v in src_state_dict.items()}
-        new_state_dict = OrderedDict()
-        
-        print("开始执行精确映射...")
-        print("源模型 Key 数量：", len(src_state_dict))
-        print("目标模型 Key 数量：", len(model.state_dict()))
-
-
-        # 获取当前 PyTorch 模型的 state_dict
-        model_state_dict = model.state_dict() # 注意：如果这段代码在模型类内部，请将 model 替换为 self
-
-        # 统计用
-        exact_match_count = 0
-        mapped_count = 0
-
-        print("开始精准匹配与智能映射权重...")
-
-        for model_key in model_state_dict.keys():
-            
-            # -----------------------------------------------------------
-            # [特殊处理 1] pos_embed 形状适配 (Task Token + Patch Token)
-            # -----------------------------------------------------------
-            if 'encoder.pos_embed' == model_key:
-                target_shape = model_state_dict[model_key].shape
-                v = src_state_dict.get(model_key)
-                if v is not None and v.shape != target_shape:
-                    # 严格按照你旧代码的顺序：Task Token 在前，Patch Token 在后
-                    cls_pos = v[:, 0:1, :]
-                    patch_pos = v[:, 1:, :]
-                    task_pos = cls_pos.repeat(1, 31, 1)
-                    v = torch.cat([task_pos, patch_pos], dim=1)
-                    print(f"  [Encoder] Resized pos_embed to {v.shape}")
-                new_state_dict[model_key] = v
-                continue
-
-            # -----------------------------------------------------------
-            # [策略 A] 精确匹配 (涵盖了所有的 Backbone, ROI, BN层等)
-            # -----------------------------------------------------------
-            if model_key in src_state_dict:
-                v = src_state_dict[model_key]
-                if v.shape == model_state_dict[model_key].shape:
-                    new_state_dict[model_key] = v
-                    exact_match_count += 1
-                else:
-                    print(f"  [Shape Mismatch] {model_key}: ckpt {v.shape} != model {model_state_dict[model_key].shape}")
-                continue
-
-            # -----------------------------------------------------------
-            # [策略 B] Encoder 的 last_norm 映射
-            # -----------------------------------------------------------
-            if 'encoder.norm.' in model_key:
-                src_key = model_key.replace('encoder.norm.', 'encoder.last_norm.')
-                if src_key in src_state_dict and src_state_dict[src_key].shape == model_state_dict[model_key].shape:
-                    new_state_dict[model_key] = src_state_dict[src_key]
-                    mapped_count += 1
-                    continue
-
-            # -----------------------------------------------------------
-            # [策略 C] Decoder Transformer 的智能映射 (极其重要，防止手脸扭曲)
-            # -----------------------------------------------------------
-            if 'decoder.layers.' in model_key:
-                src_key = model_key
-                # 1. 补全 MMCV 的 Transformer 路径
-                if 'hand_decoder.layers.' in model_key:
-                    src_key = src_key.replace('hand_decoder.layers.', 'hand_decoder.keypoint_head.transformer.decoder.layers.')
-                elif 'face_decoder.layers.' in model_key:
-                    src_key = src_key.replace('face_decoder.layers.', 'face_decoder.keypoint_head.transformer.decoder.layers.')
-                    
-                # 2. 映射 Self-Attention
-                src_key = src_key.replace('.self_attn.in_proj_', '.attentions.0.attn.in_proj_')
-                src_key = src_key.replace('.self_attn.out_proj.', '.attentions.0.attn.out_proj.')
-                
-                # 3. 映射 Cross-Attention
-                src_key = src_key.replace('.cross_attn.sampling_offsets.', '.attentions.1.sampling_offsets.')
-                src_key = src_key.replace('.cross_attn.attention_weights.', '.attentions.1.attention_weights.')
-                # MMCV 的 value_proj 命名非常特别，带有 weight 和 bias 后缀
-                src_key = src_key.replace('.cross_attn.value_proj.weight', '.attentions.1.value_proj_weight.weight')
-                src_key = src_key.replace('.cross_attn.value_proj.bias', '.attentions.1.value_proj_bias.weight') # MMCV bias也叫weight
-                src_key = src_key.replace('.cross_attn.output_proj.', '.attentions.1.output_proj.')
-                
-                # 4. 映射 FFN 和 Norm
-                src_key = src_key.replace('.linear1.', '.ffns.0.layers.0.0.')
-                src_key = src_key.replace('.linear2.', '.ffns.0.layers.1.')
-                src_key = src_key.replace('.norm1.', '.norms.0.')
-                src_key = src_key.replace('.norm2.', '.norms.1.')
-                src_key = src_key.replace('.norm3.', '.norms.2.')
-
-                # 尝试从源字典中获取并校验形状
-                if src_key in src_state_dict:
-                    v = src_state_dict[src_key]
-                    if v.shape == model_state_dict[model_key].shape:
-                        new_state_dict[model_key] = v
-                        mapped_count += 1
-                    # 注意：如果维度不匹配(如query_embed)，这里会安全地跳过，等待你后续的重构
-                continue
-
-        # 执行最终加载
-        missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
-
-        print("\n" + "="*40)
-        print("✅ 权重加载完成报告:")
-        print("="*40)
-        print(f"🎯 精确匹配加载: {exact_match_count} 个张量 (含 BN 层的统计参数)")
-        print(f"🔗 智能映射加载: {mapped_count} 个张量 (主要为 Decoder 的 Transformer 层)")
-
-        # 帮你排查除了你还没重写完的部分，是否还有其他遗漏
-        real_missing = [m for m in missing if not ('decoder' in m)]
-        if real_missing:
-            print(f"\n⚠️ 警告: 以下基础网络部分存在未加载的参数 (请检查拼写):")
-            for m in real_missing:
-                print(f"  - {m}")
-        else:
-            print("\n🎉 完美！骨干网络已全部精准对齐，Decoder 的核心 Transformer 层也已成功映射，不再是随机噪声！")
-
-        # --- 步骤 2: 加载自己保存的轻量级 Checkpoint ---
-        ckpt_path = cfg.continue_train_path # 假设你配置里指定了要恢复的 snapshot 路径
-        self.logger.info(f"Resume Step 2: Loading trained modules from {ckpt_path}...")
-        ckpt = torch.load(ckpt_path, map_location='cpu')
-
-        if 'network' in ckpt:
-            model_dict = model.state_dict()
-            trained_dict = ckpt['network']  # 这里面现在只有 trainable 部分
-
-            loaded = 0
-            for k, v in trained_dict.items():
-                if k in model_dict and model_dict[k].shape == v.shape:
-                    model_dict[k] = v
-                    loaded += 1
-
-            # strict=False 允许只覆盖可训练部分，不动刚刚加载好的 Backbone
-            missing, unexpected = model.load_state_dict(model_dict, strict=False) 
-            self.logger.info(f"  成功覆盖了 {loaded} 个已训练的参数张量")
-
-            if missing:
-                print(f"\n⚠️ 警告: 以下可训练网络部分存在未加载的参数 (请检查拼写):")
-                for m in missing:
-                    print(f"  - {m}")
-            elif unexpected:
-                print(f"\n⚠️ 警告: 以下可训练网络部分存在未预期的参数 (请检查拼写):")
-                for m in unexpected:
-                    print(f"  - {m}")
-            else:
-                print("\n🎉 完美！可训练网络已全部加载")
-        else:
-            raise Exception("Checkpoint 中不存在 'network' 字段，请检查是否正确加载")
-        
+        self._load_pretrained_pytorch_model(model, cfg.pretrained_model_path)
+        if cfg.continue_train_path:
+            self.logger.info(f"Resume Step 2: Loading trained modules from {cfg.continue_train_path}...")
+            self._load_lightweight_trained_modules(model, cfg.continue_train_path)
+        model.eval()
         self.model = model
-# model.eval()

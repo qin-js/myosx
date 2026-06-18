@@ -1,0 +1,218 @@
+
+  当前结论（2026-06-17）
+
+  已改用动态门控：训练时在 main/model_core.py 内基于当前 iteration 实际
+  augmentation 后的 box_net hand bbox 和 GT-valid hand joints 现场计算 coverage，
+  并只 mask BEDLAM 对应手的 hand-space 2D loss。训练不再加载离线 npz。
+
+  tool/BEDLAM/compute_hand_roi_quality.py 只保留为离线审计/决策工具，用于估计
+  BEDLAM 是否值得作为辅助 hand source；不要把它生成的随机 augmentation npz
+  当作训练门控文件。
+
+  问题
+
+  当前 InterHand + BEDLAM 混训里，BEDLAM 可能对手部分支产生噪声监督。
+
+  原因不是 BEDLAM 本身没价值，而是当前训练路径依赖 frozen top-down ROI：
+
+  - encoder / body_position_net / body_regressor / box_net / hand_roi_net 当前冻结。
+  - BEDLAM 没有像 InterHand 那样注入 GT hand bbox。
+  - BEDLAM 的 hand crop 依赖 frozen box_net 预测框。
+  - BEDLAM 有多人、遮挡、错位场景；如果 box_net 框错人或框偏，hand branch 会拿错误 ROI 去对齐目标人物的 SMPL-X hand GT。
+  - 这种错误 crop 会污染 joint_proj / joint_img / smplx_joint_img 等 hand-space 2D loss。
+
+  之前日志里已经出现过一次 loss_joint_proj / loss_joint_img / loss_smplx_joint_img = nan，已在训练代码中补了 finite guard 和 bbox sanitize，但这只能防
+  NaN，不能解决“合法但框错人”的噪声监督。
+
+  历史方案（已废弃）：静态 npz 门控
+
+  下面的静态 npz 方案已被动态门控替代，仅作为设计过程记录。不要按本段生成
+  quality npz 并在训练中加载；随机 flip/scale/rot 会导致静态文件和训练时实际
+  crop 不一致。
+
+  目标
+
+  增加 BEDLAM hand ROI 质量统计和门控：
+
+  1. 离线统计 frozen OSX box_net 预测 hand bbox 对 BEDLAM GT hand joints 的覆盖率。
+  2. 生成质量文件。
+  3. 训练时根据质量文件 mask BEDLAM hand-space 2D loss。
+  4. 保留 BEDLAM 的 body / SMPL-X pose / shape 等监督价值，不直接全量丢弃 BEDLAM。
+
+  统计指标
+
+  对每个 BEDLAM sample，分别统计左右手：
+
+  valid_gt_joints = hand joints with trunc == 1
+  inside = valid_gt_joints whose x/y lie inside predicted hand bbox
+  coverage = inside_count / valid_gt_joint_count
+
+  质量条件建议：
+
+  bbox finite
+  bbox_width >= 8 px
+  bbox_height >= 8 px
+  valid_gt_joint_count >= 8
+  coverage >= 0.6
+
+  输出整体报告：
+
+  checked samples
+  left hand ok ratio
+  right hand ok ratio
+  either hand ok ratio
+  both hands ok ratio
+  invalid bbox ratio
+  no valid GT hand joints ratio
+  coverage mean / median / p10 / p90
+  coverage bins: 0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0
+
+  建议新增脚本
+
+  新增：
+
+  tool/BEDLAM/compute_hand_roi_quality.py
+
+  命令示例：
+
+  cd /workspace/myosx/main
+  python ../tool/BEDLAM/compute_hand_roi_quality.py \
+    --gpu 0 \
+    --split train \
+    --max_samples 5000 \
+    --batch_size 32 \
+    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+    --output ../dataset/BEDLAM/processed_labels/hand_roi_quality_train.npz
+
+  脚本逻辑：
+
+  1. 初始化 cfg 和 BEDLAM dataset。
+  2. 加载 pretrained OSX。
+  3. 只 forward 到 encoder + body_position_net + box_net，拿 lhand_bbox_center/size 和 rhand_bbox_center/size。
+  4. 用 restore_bbox() 得到 input body space 的 bbox。
+  5. 用 BEDLAM target 的 smplx_joint_img 或 joint_img 和 smplx_joint_trunc 计算 coverage。
+  6. 保存 .npz，包含：
+
+  sample_keys
+  lhand_roi_valid
+  rhand_roi_valid
+  lhand_coverage
+  rhand_coverage
+  lhand_valid_joint_count
+  rhand_valid_joint_count
+  lhand_bbox_valid
+  rhand_bbox_valid
+
+  sample_keys 需要能稳定对应 BEDLAM datalist。优先使用已有 annotation id / image path / frame id；如果没有统一 id，至少保存 datalist index，但要确保同一
+  processed label 版本下顺序稳定。
+
+  训练集成
+
+  新增 config：
+
+  cfg.bedlam_use_hand_roi_quality = True
+  cfg.bedlam_hand_roi_quality_path = '/workspace/BEDLAM_Dataset/processed_labels/hand_roi_quality_train.npz'
+  cfg.bedlam_hand_roi_coverage_thr = 0.6
+
+  修改 data/BEDLAM/BEDLAM.py：
+
+  - 初始化时读取 quality npz。
+  - 在 __getitem__() 的 meta_info 加：
+
+  meta_info["lhand_roi_valid"] = float(...)
+  meta_info["rhand_roi_valid"] = float(...)
+  meta_info["lhand_roi_coverage"] = float(...)
+  meta_info["rhand_roi_coverage"] = float(...)
+
+  - 如果 quality 文件不存在或某个 sample 找不到，建议默认：
+
+  lhand_roi_valid = 1.0
+  rhand_roi_valid = 1.0
+
+  这样不破坏旧训练行为；也可以打印 warning。
+
+  修改 data/InterHand26M/InterHand26M.py：
+
+  meta_info["lhand_roi_valid"] = 1.0
+  meta_info["rhand_roi_valid"] = 1.0
+  meta_info["lhand_roi_coverage"] = 1.0
+  meta_info["rhand_roi_coverage"] = 1.0
+
+  修改 main/model_core.py：
+
+  在 hand target remap / hand-space 2D loss mask 处，只对对应手部 trunc 加 ROI 门控：
+
+  roi_valid = meta_info.get(f"{part_name}_roi_valid", None)
+  if roi_valid is not None:
+      trunc *= roi_valid.view(-1, 1)
+
+  注意只影响：
+
+  - joint_proj
+  - joint_img
+  - smplx_joint_img
+
+  不要影响：
+
+  - smplx_pose
+  - smplx_shape
+  - joint_cam
+  - smplx_joint_cam
+
+  否则会浪费 BEDLAM 的全身 SMPL-X 监督。
+
+  判断标准
+
+  先跑 max_samples=5000。
+
+  如果：
+
+  either hand ok < 50%
+
+  则 BEDLAM 不适合作为当前冻结 ROI 设定下的强 hand supervision，只应用 mask 后的 hand loss，或降低 BEDLAM 采样比例。
+
+  如果：
+
+  either hand ok 50%-70%
+
+  建议保留 BEDLAM，但必须使用 ROI quality mask，并保持 InterHand-heavy 采样。
+
+  如果：
+
+  either hand ok > 70%
+
+  BEDLAM 可作为较有价值的 hand 辅助源，但仍建议保留 mask，防止尾部坏样本污染训练。
+
+  ============================================================
+  最终方案更新（2026-06-17）：改用动态门控，不再生成/加载 npz
+  ============================================================
+
+  决策已完成：5000 样本试跑 either-hand-ok = 81.3% (> 70%) → 保留 BEDLAM + 开 mask。
+  coverage 是强双峰分布（约 28% 近 0「框错人」/ 65% 近 1「框对」/ 中间仅 ~7%），
+  所以阈值 0.6 落在空带里、非常鲁棒，不必调参。
+
+  关键认知：失败模式是「box_net 框错人」而非「框崩」（invalid bbox = 0%）。
+  将来若想救回这 28%，方向是让 box_net 锁对目标人（例如给 BEDLAM 也注入 GT
+  body/hand bbox，类似 InterHand 的 inject_gt_hand_bbox），而不是修 bbox 尺寸。
+
+  实现方式（与本文档最初设想不同，已废弃静态文件路径）：
+  - 训练时的门控是【动态】的，在 main/model_core.py 的 hand-space 2D loss 段
+    直接用「当前 iteration 实际增广后的 box_net 框」现场算 coverage 并否决整只手。
+    复用了那里本就存在的 in_bbox，几乎不增加计算。
+  - 这样彻底消除了「静态 npz 在固定视角下算、训练却是随机 flip/scale/rot」的
+    mismatch，也不需要 ann_id 匹配、不存在 5000 vs 93k 覆盖缺口。
+  - tool/BEDLAM/compute_hand_roi_quality.py 仅用于【离线决策 + 审计】，
+    训练【不】加载它，也不需要把它跑成全量 npz。
+
+  启用方式（config.py，默认关闭，等价旧行为）：
+    cfg.bedlam_use_hand_roi_quality = True
+    cfg.bedlam_hand_roi_coverage_thr = 0.6   # 双峰下不敏感
+    cfg.bedlam_hand_roi_min_joints   = 8
+
+  只 mask：joint_proj / joint_img / smplx_joint_img（经 joint_trunc /
+  smplx_joint_trunc，仅手部、仅 BEDLAM）。
+  不动：smplx_pose / smplx_shape / joint_cam / smplx_joint_cam（保留 BEDLAM 全身监督）。
+  InterHand（GT 框，is_bedlam=0）永不被门控。
+
+  验证要点：开门控烟测一个 batch，[bedlam] 的 joint_proj/joint_img/smplx_joint_img
+  应相对关门控时下降，而 [bedlam] 的 joint_cam/smplx_joint_cam 不变、[interhand] 全不变。

@@ -1,5 +1,8 @@
 pretrained_models/
 *__pycache__
-*output
+output/
 common/utils/human_model_files/
 *hmf.zip
+dataset/
+.codex/
+core.*

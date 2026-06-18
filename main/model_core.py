@@ -17,7 +17,7 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from common.nets.module import PositionNet, HandRotationNet, FaceRegressor, BoxNet, BoxSizeNet, HandRoI, FaceRoI, BodyRotationNet
-from common.nets.loss import CoordLoss, ParamLoss, CELoss
+from common.nets.loss import CoordLoss, ParamLoss, CELoss, RotMatParamLoss
 from common.utils.human_models import smpl_x
 from common.utils.transforms import rot6d_to_axis_angle, restore_bbox
 from common.nets.vit import *
@@ -55,6 +55,7 @@ class Model(nn.Module):
         self.coord_loss = CoordLoss()
         self.param_loss = ParamLoss()
         self.ce_loss = CELoss()
+        self.rotmat_param_loss = RotMatParamLoss()
 
         self.body_num_joints = len(smpl_x.pos_joint_part['body'])
         self.hand_num_joints = len(smpl_x.pos_joint_part['rhand'])
@@ -103,28 +104,36 @@ class Model(nn.Module):
 
     def set_training_phase(self, phase):
         """
-        Phase 1: 只训练 position_net + decoder（冻结 regressor）
-        Phase 2: 全部训练模块一起微调
+        Phase 1: hand-focused finetuning. Optionally trains hand_regressor at
+        a low learning rate and keeps face modules frozen by default.
+        Phase 2: all configured trainable modules can be finetuned.
         """
         self.training_phase = phase
         
         if phase == 1:
-            # 冻结 regressor
-            for module_name in ['hand_regressor', 'face_regressor']:
+            regressor_trainable = {
+                'hand_regressor': getattr(cfg, 'phase1_train_hand_regressor', True),
+                'face_regressor': getattr(cfg, 'train_face_modules', False),
+            }
+            for module_name, trainable in regressor_trainable.items():
                 module = getattr(self, module_name)
-                module.eval()
+                module.train(trainable)
                 for param in module.parameters():
-                    param.requires_grad = False
-            print("Phase 1: 冻结 regressor，只训练 position_net + decoder")
+                    param.requires_grad = trainable
+            print("Phase 1: hand-focused finetuning")
             
         elif phase == 2:
             # 解冻 regressor
-            for module_name in ['hand_regressor', 'face_regressor']:
+            regressor_trainable = {
+                'hand_regressor': True,
+                'face_regressor': getattr(cfg, 'train_face_modules', False),
+            }
+            for module_name, trainable in regressor_trainable.items():
                 module = getattr(self, module_name)
-                module.train()
+                module.train(trainable)
                 for param in module.parameters():
-                    param.requires_grad = True
-            print("Phase 2: 解冻 regressor，全部微调")
+                    param.requires_grad = trainable
+            print("Phase 2: configured module finetuning")
 
 
     def freeze_modules(self):
@@ -208,6 +217,36 @@ class Model(nn.Module):
                 [p for p in module.parameters() if p.requires_grad]
             )
         return trainable_params
+
+    def _sanitize_hand_bbox(self, bbox):
+        min_size = 1.0
+        finite = torch.isfinite(bbox).all(dim=1)
+        safe_bbox = torch.nan_to_num(bbox, nan=0.0, posinf=0.0, neginf=0.0)
+        bbox_w = safe_bbox[:, 2] - safe_bbox[:, 0]
+        bbox_h = safe_bbox[:, 3] - safe_bbox[:, 1]
+        valid = finite & (bbox_w > min_size) & (bbox_h > min_size)
+        default_bbox = safe_bbox.new_tensor([
+            0.0,
+            0.0,
+            float(cfg.input_body_shape[1]),
+            float(cfg.input_body_shape[0]),
+        ]).view(1, 4)
+        safe_bbox = torch.where(valid[:, None], safe_bbox, default_bbox.expand_as(safe_bbox))
+        return safe_bbox, valid.float()
+
+    def _hand_bbox_transform(self, bbox):
+        min_size = 1.0
+        bbox_w = (bbox[:, 2] - bbox[:, 0]).clamp(min=min_size)
+        bbox_h = (bbox[:, 3] - bbox[:, 1]).clamp(min=min_size)
+        x0 = bbox[:, None, 0] / cfg.input_body_shape[1] * cfg.output_hm_shape[2]
+        y0 = bbox[:, None, 1] / cfg.input_body_shape[0] * cfg.output_hm_shape[1]
+        x_scale = cfg.output_hand_hm_shape[2] / (
+            bbox_w[:, None] / cfg.input_body_shape[1] * cfg.output_hm_shape[2]
+        )
+        y_scale = cfg.output_hand_hm_shape[1] / (
+            bbox_h[:, None] / cfg.input_body_shape[0] * cfg.output_hm_shape[1]
+        )
+        return x0, y0, x_scale, y_scale
 
     def get_trainable_params_with_lr(self, base_lr):
         """
@@ -412,9 +451,29 @@ class Model(nn.Module):
 
         # 3. Hand and Face BBox Estimation
         lhand_bbox_center, lhand_bbox_size, rhand_bbox_center, rhand_bbox_size, face_bbox_center, face_bbox_size = self.box_net(img_feat, body_joint_hm.detach())
-        lhand_bbox = restore_bbox(lhand_bbox_center, lhand_bbox_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
-        rhand_bbox = restore_bbox(rhand_bbox_center, rhand_bbox_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
+
+        # Boxes used for the differentiable ROI crop. By default these are the
+        # box_net predictions, but for hand-only datasets (e.g. InterHand) the
+        # frozen top-down box_net outputs degenerate whole-frame boxes, so we
+        # crop with the GT hand box instead. The box_net predictions
+        # (lhand_bbox_center/size, ...) are kept untouched for the bbox loss.
+        roi_lhand_center, roi_lhand_size = lhand_bbox_center, lhand_bbox_size
+        roi_rhand_center, roi_rhand_size = rhand_bbox_center, rhand_bbox_size
+        if getattr(cfg, 'inject_gt_hand_bbox', False) and 'is_hand_only' in meta_info \
+                and 'lhand_bbox_center' in targets:
+            hand_only = meta_info['is_hand_only'].view(-1) > 0
+            l_use = (hand_only & (meta_info['lhand_bbox_valid'].view(-1) > 0)).view(-1, 1)
+            r_use = (hand_only & (meta_info['rhand_bbox_valid'].view(-1) > 0)).view(-1, 1)
+            roi_lhand_center = torch.where(l_use, targets['lhand_bbox_center'], roi_lhand_center)
+            roi_lhand_size = torch.where(l_use, targets['lhand_bbox_size'], roi_lhand_size)
+            roi_rhand_center = torch.where(r_use, targets['rhand_bbox_center'], roi_rhand_center)
+            roi_rhand_size = torch.where(r_use, targets['rhand_bbox_size'], roi_rhand_size)
+
+        lhand_bbox = restore_bbox(roi_lhand_center, roi_lhand_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
+        rhand_bbox = restore_bbox(roi_rhand_center, roi_rhand_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
         face_bbox = restore_bbox(face_bbox_center, face_bbox_size, cfg.input_face_shape[1] / cfg.input_face_shape[0], 1.5).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
+        lhand_bbox, lhand_bbox_safe_valid = self._sanitize_hand_bbox(lhand_bbox)
+        rhand_bbox, rhand_bbox_safe_valid = self._sanitize_hand_bbox(rhand_bbox)
 
         # 4. Differentiable Feature-level Hand/Face Crop-Upsample
         # hand_feat: list, [bsx2, c, cfg.output_hand_hm_shape[1]*scale, cfg.output_hand_hm_shape[2]*scale]
@@ -465,6 +524,22 @@ class Model(nn.Module):
             # loss functions
             loss = {}
             loss['smplx_pose'] = self.param_loss(pose, targets['smplx_pose'], meta_info['smplx_pose_valid'])
+            # Optional rotation-matrix pose loss on the 30 hand finger joints
+            # (cfg.use_hand_rotmat_pose_loss, default OFF). Raw axis-angle L1 is
+            # discontinuous / non-unique for articulated fingers; a rotmat L1 is
+            # rotation-aware. ADDITIVE to the axis-angle smplx_pose loss above
+            # (not a replacement), masked by smplx_pose_valid so it only fires on
+            # joints with valid GT (BEDLAM hands; InterHand 15+15 fingers). When
+            # the flag is off the key is never created, so it has zero effect.
+            if getattr(cfg, 'use_hand_rotmat_pose_loss', False):
+                bs = pose.shape[0]
+                hand_joint_idx = (list(smpl_x.orig_joint_part['lhand']) +
+                                  list(smpl_x.orig_joint_part['rhand']))
+                pose_hand = pose.reshape(bs, smpl_x.orig_joint_num, 3)[:, hand_joint_idx, :]
+                gt_hand = targets['smplx_pose'].reshape(bs, smpl_x.orig_joint_num, 3)[:, hand_joint_idx, :]
+                valid_hand = meta_info['smplx_pose_valid'].reshape(bs, smpl_x.orig_joint_num, 3)[:, hand_joint_idx, :1]
+                loss['smplx_hand_pose_rotmat'] = self.rotmat_param_loss(
+                    pose_hand, gt_hand, valid_hand) * getattr(cfg, 'hand_rotmat_pose_loss_weight', 1.0)
             loss['smplx_shape'] = self.param_loss(shape, targets['smplx_shape'], meta_info['smplx_shape_valid'][:, None]) * cfg.smplx_loss_weight
             loss['smplx_expr'] = self.param_loss(expr, targets['smplx_expr'], meta_info['smplx_expr_valid'][:, None])
             loss['joint_cam'] = self.coord_loss(joint_cam, targets['joint_cam'], meta_info['joint_valid'] * meta_info['is_3D'][:, None, None])
@@ -476,26 +551,50 @@ class Model(nn.Module):
             loss['face_bbox'] = (self.coord_loss(face_bbox_center, targets['face_bbox_center'], meta_info['face_bbox_valid'][:, None]) +
                                  self.coord_loss(face_bbox_size, targets['face_bbox_size'], meta_info['face_bbox_valid'][:, None]))
             # change hand target joint_img and joint_trunc according to hand bbox (cfg.output_hm_shape -> downsampled hand bbox space)
-            for part_name, bbox in (('lhand', lhand_bbox), ('rhand', rhand_bbox)):
+            # Dynamic BEDLAM hand-ROI quality gate setup (applied per-coord below).
+            roi_gate_on = getattr(cfg, 'bedlam_use_hand_roi_quality', False)
+            if roi_gate_on:
+                roi_cov_thr = float(getattr(cfg, 'bedlam_hand_roi_coverage_thr', 0.6))
+                roi_min_joints = int(getattr(cfg, 'bedlam_hand_roi_min_joints', 8))
+                if 'is_bedlam' in meta_info:
+                    is_bedlam = meta_info['is_bedlam'].to(lhand_bbox.device).view(-1).float()
+                else:
+                    is_bedlam = lhand_bbox.new_zeros(lhand_bbox.shape[0])
+            for part_name, bbox, bbox_valid in (
+                    ('lhand', lhand_bbox, lhand_bbox_safe_valid),
+                    ('rhand', rhand_bbox, rhand_bbox_safe_valid)):
+                x0, y0, x_scale, y_scale = self._hand_bbox_transform(bbox)
                 for coord_name, trunc_name in (('joint_img', 'joint_trunc'), ('smplx_joint_img', 'smplx_joint_trunc')):
-                    x = targets[coord_name][:, smpl_x.joint_part[part_name], 0]
-                    y = targets[coord_name][:, smpl_x.joint_part[part_name], 1]
-                    z = targets[coord_name][:, smpl_x.joint_part[part_name], 2]
+                    x = targets[coord_name][:, smpl_x.joint_part[part_name], 0].clone()
+                    y = targets[coord_name][:, smpl_x.joint_part[part_name], 1].clone()
+                    z = targets[coord_name][:, smpl_x.joint_part[part_name], 2].clone()
                     trunc = meta_info[trunc_name][:, smpl_x.joint_part[part_name], 0]
+                    gt_valid = trunc > 0  # GT-valid hand joints (before bbox/in_bbox masking)
 
-                    x -= (bbox[:, None, 0] / cfg.input_body_shape[1] * cfg.output_hm_shape[2])
-                    x *= (cfg.output_hand_hm_shape[2] / (
-                            (bbox[:, None, 2] - bbox[:, None, 0]) / cfg.input_body_shape[1] * cfg.output_hm_shape[
-                        2]))
-                    y -= (bbox[:, None, 1] / cfg.input_body_shape[0] * cfg.output_hm_shape[1])
-                    y *= (cfg.output_hand_hm_shape[1] / (
-                            (bbox[:, None, 3] - bbox[:, None, 1]) / cfg.input_body_shape[0] * cfg.output_hm_shape[
-                        1]))
+                    x = (x - x0) * x_scale
+                    y = (y - y0) * y_scale
                     z *= cfg.output_hand_hm_shape[0] / cfg.output_hm_shape[0]
-                    trunc *= ((x >= 0) * (x < cfg.output_hand_hm_shape[2]) * (y >= 0) * (
-                            y < cfg.output_hand_hm_shape[1]))
-
                     coord = torch.stack((x, y, z), 2)
+                    coord_finite = torch.isfinite(coord).all(dim=2)
+                    coord = torch.nan_to_num(coord, nan=0.0, posinf=0.0, neginf=0.0)
+                    in_bbox = ((coord[:, :, 0] >= 0) *
+                               (coord[:, :, 0] < cfg.output_hand_hm_shape[2]) *
+                               (coord[:, :, 1] >= 0) *
+                               (coord[:, :, 1] < cfg.output_hand_hm_shape[1]))
+                    trunc = trunc * bbox_valid[:, None] * coord_finite.float() * in_bbox.float()
+                    # Dynamic hand-ROI quality gate: coverage = (#GT-valid hand
+                    # joints inside the ACTUAL augmented predicted bbox) / (#GT-valid
+                    # hand joints). Low coverage => box_net framed the wrong person
+                    # => veto this hand's whole 2D trunc. Computed live so it matches
+                    # train-time augmentation exactly (no flip/scale/rot mismatch).
+                    # BEDLAM-only; InterHand (GT bbox) and non-BEDLAM keep roi_ok=1.
+                    if roi_gate_on:
+                        gate_valid = gt_valid & coord_finite
+                        n_valid = gate_valid.sum(dim=1)
+                        coverage = (gate_valid & in_bbox.bool()).sum(dim=1).float() / n_valid.clamp(min=1).float()
+                        roi_ok = ((bbox_valid > 0) & (n_valid >= roi_min_joints) & (coverage >= roi_cov_thr)).float()
+                        roi_ok = torch.where(is_bedlam > 0, roi_ok, torch.ones_like(roi_ok))
+                        trunc = trunc * roi_ok[:, None]
                     trunc = trunc[:, :, None]
                     targets[coord_name] = torch.cat((targets[coord_name][:, :smpl_x.joint_part[part_name][0], :], coord,
                                                      targets[coord_name][:, smpl_x.joint_part[part_name][-1] + 1:, :]),
@@ -506,26 +605,33 @@ class Model(nn.Module):
                                                        :]), 1)
 
             # change hand projected joint coordinates according to hand bbox (cfg.output_hm_shape -> hand bbox space)
-            for part_name, bbox in (('lhand', lhand_bbox), ('rhand', rhand_bbox)):
-                x = joint_proj[:, smpl_x.joint_part[part_name], 0]
-                y = joint_proj[:, smpl_x.joint_part[part_name], 1]
+            for part_name, bbox, bbox_valid in (
+                    ('lhand', lhand_bbox, lhand_bbox_safe_valid),
+                    ('rhand', rhand_bbox, rhand_bbox_safe_valid)):
+                x0, y0, x_scale, y_scale = self._hand_bbox_transform(bbox)
+                x = joint_proj[:, smpl_x.joint_part[part_name], 0].clone()
+                y = joint_proj[:, smpl_x.joint_part[part_name], 1].clone()
 
-                x -= (bbox[:, None, 0] / cfg.input_body_shape[1] * cfg.output_hm_shape[2])
-                x *= (cfg.output_hand_hm_shape[2] / (
-                        (bbox[:, None, 2] - bbox[:, None, 0]) / cfg.input_body_shape[1] * cfg.output_hm_shape[2]))
-                y -= (bbox[:, None, 1] / cfg.input_body_shape[0] * cfg.output_hm_shape[1])
-                y *= (cfg.output_hand_hm_shape[1] / (
-                        (bbox[:, None, 3] - bbox[:, None, 1]) / cfg.input_body_shape[0] * cfg.output_hm_shape[1]))
+                x = (x - x0) * x_scale
+                y = (y - y0) * y_scale
 
                 coord = torch.stack((x, y), 2)
+                coord_finite = torch.isfinite(coord).all(dim=2)
+                coord = torch.nan_to_num(coord, nan=0.0, posinf=0.0, neginf=0.0)
+                coord = torch.where(
+                    bbox_valid[:, None, None].bool(),
+                    coord,
+                    coord.new_zeros(coord.shape),
+                )
                 trans = []
                 for bid in range(coord.shape[0]):
+                    target_coord = targets['joint_img'][bid, smpl_x.joint_part[part_name], :2]
                     mask = meta_info['joint_trunc'][bid, smpl_x.joint_part[part_name], 0] == 1
+                    mask = mask & coord_finite[bid] & torch.isfinite(target_coord).all(dim=1)
                     if torch.sum(mask) == 0:
-                        trans.append(torch.zeros((2)).float().cuda())
+                        trans.append(coord.new_zeros((2)))
                     else:
-                        trans.append((-coord[bid, mask, :2] + targets['joint_img'][:, smpl_x.joint_part[part_name], :][
-                                                              bid, mask, :2]).mean(0))
+                        trans.append((-coord[bid, mask, :2] + target_coord[mask, :2]).mean(0))
                 trans = torch.stack(trans)[:, None, :]
                 coord = coord + trans  # global translation alignment
                 joint_proj = torch.cat((joint_proj[:, :smpl_x.joint_part[part_name][0], :], coord,
@@ -547,13 +653,43 @@ class Model(nn.Module):
                                     joint_proj[:, smpl_x.joint_part['face'][-1] + 1:, :]), 1)
 
 
+            # B-class anti-pollution: drop the BEDLAM hand contribution to the two
+            # heatmap-supervising losses (joint_img / smplx_joint_img). These are
+            # the ONLY gradient path into the hand_position_net soft-argmax head
+            # (hand_joint_img is detached everywhere else), and BEDLAM's ~1px hand
+            # crops make that target ill-posed, collapsing the shared head. We build
+            # a masked trunc used ONLY for these two losses; joint_proj keeps the
+            # original coverage-gated joint_trunc (it is stable and is the only
+            # real-image hand 2D-alignment signal). InterHand / non-BEDLAM untouched.
+            joint_trunc_img = meta_info['joint_trunc']
+            smplx_joint_trunc_img = meta_info['smplx_joint_trunc']
+            if not getattr(cfg, 'bedlam_supervise_hand_img', True) and 'is_bedlam' in meta_info:
+                is_bedlam = meta_info['is_bedlam'].to(joint_trunc_img.device).view(-1, 1, 1).float()
+                hand_joint_mask = joint_trunc_img.new_zeros(joint_trunc_img.shape[1])
+                hand_joint_mask[smpl_x.joint_part['lhand']] = 1.0
+                hand_joint_mask[smpl_x.joint_part['rhand']] = 1.0
+                keep = 1.0 - is_bedlam * hand_joint_mask.view(1, -1, 1)
+                joint_trunc_img = joint_trunc_img * keep
+                smplx_joint_trunc_img = smplx_joint_trunc_img * keep
+
             loss['joint_proj'] = self.coord_loss(joint_proj, targets['joint_img'][:, :, :2], meta_info['joint_trunc'])
-            loss['joint_img'] = self.coord_loss(joint_img, smpl_x.reduce_joint_set(targets['joint_img']),
-                                                smpl_x.reduce_joint_set(meta_info['joint_trunc']), meta_info['is_3D'])
+            joint_img_loss = self.coord_loss(joint_img, smpl_x.reduce_joint_set(targets['joint_img']),
+                                             smpl_x.reduce_joint_set(joint_trunc_img), meta_info['is_3D'])
+            loss['joint_img'] = joint_img_loss
             loss['joint_img_face'] = self.coord_loss(face_joint_img, targets['joint_img'][:, smpl_x.joint_part['face']],
                                                 meta_info['joint_trunc'][:, smpl_x.joint_part['face']], meta_info['is_3D'])
-            loss['smplx_joint_img'] = self.coord_loss(joint_img, smpl_x.reduce_joint_set(targets['smplx_joint_img']),
-                                                      smpl_x.reduce_joint_set(meta_info['smplx_joint_trunc']))
+            smplx_joint_img_loss = self.coord_loss(joint_img, smpl_x.reduce_joint_set(targets['smplx_joint_img']),
+                                                   smpl_x.reduce_joint_set(smplx_joint_trunc_img))
+            loss['smplx_joint_img'] = smplx_joint_img_loss
+            # Diagnostics only (keys prefixed '_' are excluded from the backward
+            # sum in train.py): split the joint_img / smplx_joint_img coord loss
+            # into xy vs z so a depth-channel blow-up is visible per data source.
+            # Slicing the already-computed loss tensors keeps these consistent
+            # with the supervised values (is_3D gating on z is already applied).
+            loss['_joint_img_xy'] = joint_img_loss[:, :, :2]
+            loss['_joint_img_z'] = joint_img_loss[:, :, 2:]
+            loss['_smplx_joint_img_xy'] = smplx_joint_img_loss[:, :, :2]
+            loss['_smplx_joint_img_z'] = smplx_joint_img_loss[:, :, 2:]
             return loss
         else:
             # change hand output joint_img according to hand bbox

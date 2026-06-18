@@ -22,9 +22,9 @@ class Config:
     )
 
     # dataset setting
-    dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500', 'BEDLAM']
+    dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500', 'BEDLAM', 'InterHand26M']
     # trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
-    trainset_3d = []; trainset_2d = ['HAA500']; testset = 'EHF'
+    trainset_3d = ['BEDLAM', 'InterHand26M']; trainset_2d = []; testset = 'EHF'
     continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_49.pth.tar"
 
     ## UBody setting
@@ -34,21 +34,77 @@ class Config:
     ubody_benchmark = False
 
     ## BEDLAM setting
-    bedlam_dir = "/workspace/BEDLAM_Dataset"
-    bedlam_img_dir = osp.join(bedlam_dir, 'bedlam_data', 'images')
-    bedlam_annot_path = osp.join(bedlam_dir, 'bedlam_data', 'processed_labels')
-    bedlam_sample_interval = 1
-    bedlam_max_samples = None
+    bedlam_dir = os.environ.get('BEDLAM_DATASET_ROOT', '/workspace/BEDLAM_Dataset')
+    bedlam_img_dir = os.environ.get('BEDLAM_IMG_DIR', bedlam_dir)
+    bedlam_annot_path = os.environ.get('BEDLAM_PROCESSED_LABELS', osp.join(bedlam_dir, 'processed_labels'))
+    bedlam_sample_interval = 2   # per-scene stride -> ~half (93k of 186k) while keeping all 29 scenes
+    bedlam_max_samples = None    # no hard cap; sample_interval already halves uniformly
     bedlam_skip_missing_images = True
+    bedlam_convert_flat_hand_mean = True
+    # Dynamic BEDLAM hand-ROI quality gate (computed live in model_core from the
+    # ACTUAL augmented box_net bbox; no offline file needed -> no flip/scale/rot
+    # mismatch). The frozen top-down box_net can frame the wrong person on BEDLAM's
+    # multi-person / occluded scenes, so its hand crop may miss the target person's
+    # GT hand joints. When enabled, for a BEDLAM sample whose predicted hand bbox
+    # covers < coverage_thr of that hand's GT-valid joints, model_core masks ONLY
+    # that hand's hand-space 2D losses (joint_proj / joint_img / smplx_joint_img);
+    # body / SMPL-X pose / shape / joint_cam supervision is untouched. InterHand
+    # (GT bbox) and non-BEDLAM samples are never gated. The offline
+    # tool/BEDLAM/compute_hand_roi_quality.py is kept only for the go/no-go
+    # decision and auditing, NOT loaded at train time.
+    bedlam_use_hand_roi_quality = False
+    bedlam_hand_roi_coverage_thr = 0.6
+    bedlam_hand_roi_min_joints = 8
+    # B-class anti-pollution. The hand soft-argmax head (hand_position_net) takes
+    # a feature-level ROI crop of img_feat (1024, 16, 12); on BEDLAM full-body
+    # images a hand spans ~1 feature pixel, so its hand-local heatmap targets
+    # (joint_img / smplx_joint_img) are an ill-posed signal. Those two losses are
+    # the ONLY gradient source for the heatmap head (everywhere else hand_joint_img
+    # is .detach()ed), and feeding BEDLAM into them collapses the shared head
+    # mid-epoch (observed: joint_img 0.8 -> 3+ permanently, both sources, while
+    # joint_proj / joint_cam / smplx_pose stay stable). When False, BEDLAM hand
+    # joints are dropped from joint_img / smplx_joint_img only; BEDLAM hand
+    # joint_proj and all SMPL-X / 3D / pose supervision are kept, and InterHand
+    # hands are never affected. Default True = legacy behavior.
+    bedlam_supervise_hand_img = True
 
     ## InterHand2.6M setting
     interhand_annot_path = os.environ.get('INTERHAND_ANNOS', '/workspace/OpenDataLab___InterHand2_dot_6M')
     interhand_img_dir = os.environ.get('INTERHAND_IMG_DIR', '/workspace/OpenDataLab___InterHand2_dot_6M/raw/InterHand2.6M_5fps_batch1/images')
     interhand_sample_interval = 1
-    interhand_max_samples = None
-    interhand_skip_missing_images = False
+    # Temporal de-duplication: InterHand frames are grouped by
+    # (Capture, sequence, camera) = dirname(file_name). Within each group the
+    # 5fps frames are near-identical, so keep only a few representative frames
+    # spread evenly in time. This removes redundancy while preserving every
+    # subject / gesture / camera view.
+    interhand_dedup_by_group = True
+    interhand_frames_per_group = 1
+    interhand_max_samples = 80000
+    interhand_skip_missing_images = True
     interhand_use_human_annot = True
     interhand_require_mano = True
+    use_weighted_dataset_sampling = True
+    trainset_3d_sample_prob = {
+        'BEDLAM': 0.6,
+        'InterHand26M': 0.4,
+    }
+    use_hand_rotmat_pose_loss = False
+    hand_rotmat_pose_loss_weight = 1.0
+    phase1_epochs = 10
+    phase1_train_hand_regressor = True
+    train_face_modules = False
+    # A-class stabilization for the soft-argmax hand_position_net, which is the
+    # module observed to diverge mid-epoch (depth bins flip). It gets its own
+    # optimizer group at lr * posnet_lr_mult and its own tighter grad clip, so
+    # the rest of the hand/face modules keep the normal lr / global clip.
+    posnet_lr_mult = 0.25
+    posnet_grad_clip = 0.5
+    # The frozen top-down box_net produces degenerate whole-frame hand boxes on
+    # hand-centric datasets (e.g. InterHand). For samples flagged is_hand_only
+    # with a valid GT hand bbox, feed the GT box into the hand ROI crop instead
+    # of the box_net prediction. box_net predictions are still kept for the
+    # (diagnostic) bbox loss, so this does not change what box_net learns.
+    inject_gt_hand_bbox = True
 
     ## input, output size
     input_img_shape = (512, 384)
@@ -68,7 +124,10 @@ class Config:
     ## training config
     end_epoch = 14
     train_batch_size = 48
-    print_iters = 100
+    # save one InterHand (pred boxes/crop) + one BEDLAM (mesh scatter) diagnostic
+    # image per epoch under output/<exp>/vis/epoch_panel/
+    vis_epoch_panel = True
+    print_iters = 50
     lr_mult = 0.1
     smplx_loss_weight = 1
     agora_benchmark = False
@@ -99,7 +158,7 @@ class Config:
     hand_pos_joint_num = 20
     face_pos_joint_num = 72
     encoder_setting = 'osx_l'
-    decoder_setting = 'normal'
+    decoder_setting = 'pytorch'
     num_task_token = 24
     feat_dim = 768
     num_noise_sample = 0
@@ -152,8 +211,9 @@ class Config:
         make_folder(self.result_dir)
         ## copy some code to log dir as a backup
         copy_files = ['main/config.py', 'main/train.py', 'main/test.py', 'common/base.py',
-                      'main/OSX.py', 'common/nets', 'main/OSX_WoDecoder.py',
-                      'data/dataset.py', 'data/MSCOCO/MSCOCO.py', 'data/AGORA/AGORA.py']
+                      'main/OSX.py', 'main/model_core.py', 'common/nets', 'main/OSX_WoDecoder.py',
+                      'data/dataset.py', 'data/MSCOCO/MSCOCO.py', 'data/AGORA/AGORA.py',
+                      'data/BEDLAM/BEDLAM.py', 'data/InterHand26M/InterHand26M.py']
         for file in copy_files:
             os.system(f'cp -r {self.root_dir}/{file} {self.code_dir}')
 

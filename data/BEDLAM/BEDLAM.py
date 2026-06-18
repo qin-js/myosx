@@ -39,7 +39,45 @@ class BEDLAM(torch.utils.data.Dataset):
         )
         self.sample_interval = getattr(cfg, "bedlam_sample_interval", 1)
         self.max_samples = getattr(cfg, "bedlam_max_samples", None)
+        self.convert_flat_hand_mean = getattr(cfg, "bedlam_convert_flat_hand_mean", True)
+        self.lhand_mean, self.rhand_mean = self._get_hand_pose_mean()
+        # On an unreadable image (corrupt / truncated: present at load time so it
+        # passed osp.isfile, but cv2 returns None here — notably via the .pkl path,
+        # which does NOT decode-check at load, unlike the .npz path), __getitem__
+        # resamples another readable datalist entry instead of crashing the worker.
+        # Bounded by _fallback_max_tries; _warned_bad_imgs rate-limits the warning.
+        self._fallback_max_tries = 200
+        self._warned_bad_imgs = set()
         self.datalist = self.load_data()
+        # Hand-ROI quality gating is applied dynamically inside model_core using
+        # the actual augmented box_net bbox (no offline file / per-sample injection
+        # needed). See cfg.bedlam_use_hand_roi_quality and model_core.Model.forward.
+
+    @staticmethod
+    def _get_hand_pose_mean():
+        pose_mean = smpl_x.layer["neutral"].pose_mean.detach().cpu().numpy().reshape(-1)
+        return (
+            pose_mean[75:120].astype(np.float32),
+            pose_mean[120:165].astype(np.float32),
+        )
+
+    def _convert_smplx_param_flat_hand_mean(self, smplx_param):
+        if not self.convert_flat_hand_mean:
+            return smplx_param
+        if smplx_param.get("flat_hand_mean_converted", False):
+            return smplx_param
+
+        if "lhand_pose" in smplx_param:
+            lhand_pose = np.asarray(smplx_param["lhand_pose"], dtype=np.float32).reshape(-1)
+            if lhand_pose.shape[0] >= 45:
+                smplx_param["lhand_pose"] = lhand_pose[:45] - self.lhand_mean
+        if "rhand_pose" in smplx_param:
+            rhand_pose = np.asarray(smplx_param["rhand_pose"], dtype=np.float32).reshape(-1)
+            if rhand_pose.shape[0] >= 45:
+                smplx_param["rhand_pose"] = rhand_pose[:45] - self.rhand_mean
+
+        smplx_param["flat_hand_mean_converted"] = True
+        return smplx_param
 
     def _annotation_files(self):
         if osp.isfile(self.annot_path):
@@ -223,6 +261,7 @@ class BEDLAM(torch.utils.data.Dataset):
                 "face_valid": exprs is not None and pose.shape[0] >= 69,
                 "gender": self._normalize_gender(genders[idx]) if genders is not None else "neutral",
             }
+            smplx_param = self._convert_smplx_param_flat_hand_mean(smplx_param)
 
             cam_int = np.asarray(cam_ints[idx], dtype=np.float32).reshape(3, 3)
             cam_param = {
@@ -271,6 +310,8 @@ class BEDLAM(torch.utils.data.Dataset):
                 self._patch_record_camera(record, companion_npz, idx)
                 if getattr(cfg, "bedlam_skip_missing_images", True) and not osp.isfile(record["img_path"]):
                     continue
+                if "smplx_param" in record:
+                    record["smplx_param"] = self._convert_smplx_param_flat_hand_mean(record["smplx_param"])
                 out.append(record)
                 if self.max_samples is not None and len(out) >= self.max_samples:
                     break
@@ -300,14 +341,51 @@ class BEDLAM(torch.utils.data.Dataset):
         print("Loaded BEDLAM %s samples: %d" % (self.data_split, len(datalist)))
         return datalist
 
+    def _load_img_with_fallback(self, idx):
+        """Return (img, data) for datalist[idx]. If the image is unreadable
+        (corrupt / undecodable — it passed the load-time osp.isfile check but
+        cv2 returns None), replace the WHOLE sample with another readable datalist
+        entry. Bounded by _fallback_max_tries so a wholesale outage fails loudly
+        instead of looping forever. No extra annotations are retained for this.
+        """
+        n = len(self.datalist)
+        img_path = self.datalist[idx]["img_path"]
+        data = copy.deepcopy(self.datalist[idx])
+        try:
+            return load_img(img_path), data
+        except (IOError, OSError) as exc:
+            first_error = exc
+            if img_path not in self._warned_bad_imgs:
+                self._warned_bad_imgs.add(img_path)
+                print("[BEDLAM] unreadable image, resampling another sample: %s" % img_path)
+
+        for step in range(1, min(n, self._fallback_max_tries) + 1):
+            cand = self.datalist[(idx + step) % n]
+            cand_path = cand["img_path"]
+            if cand_path == img_path:
+                continue
+            try:
+                img = load_img(cand_path)
+            except (IOError, OSError):
+                continue
+            cand_shape = cand.get("img_shape")
+            if cand_shape is not None and (img.shape[0] != cand_shape[0] or img.shape[1] != cand_shape[1]):
+                continue
+            return img, copy.deepcopy(cand)
+
+        raise IOError(
+            "Fail to read %s and %d fallback samples were also unreadable"
+            % (img_path, min(n, self._fallback_max_tries))
+        ) from first_error
+
     def __len__(self):
         return len(self.datalist)
 
     def __getitem__(self, idx):
-        data = copy.deepcopy(self.datalist[idx])
+        img, data = self._load_img_with_fallback(idx)
+        data["smplx_param"] = self._convert_smplx_param_flat_hand_mean(data["smplx_param"])
         img_path, img_shape, bbox = data["img_path"], data["img_shape"], data["bbox"]
 
-        img = load_img(img_path)
         img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
         img = self.transform(img.astype(np.float32)) / 255.0
 
@@ -362,5 +440,9 @@ class BEDLAM(torch.utils.data.Dataset):
             "lhand_bbox_valid": float(False),
             "rhand_bbox_valid": float(False),
             "face_bbox_valid": float(False),
+            "dataset_id": float(0),
+            "is_interhand": float(False),
+            "is_bedlam": float(True),
+            "is_hand_only": float(False),
         }
         return inputs, targets, meta_info
