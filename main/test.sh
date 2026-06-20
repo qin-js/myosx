@@ -1,4 +1,11 @@
-python test.py --gpu 0 --exp_name output/test_setting1 --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-    --testset HAA500 --decoder_setting normal \
-    --continue_train_path /workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_49.pth.tar
-#     --debug_vis
+python test.py \
+    --gpu 0 \
+    --test_batch_size 32 \
+    --decoder_setting pytorch \
+    --testset InterHand26M \
+    --interhand_eval_split test \
+    --max_eval_iters -1 \
+    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+    --exp_name output/eval_interhand_bedlam_c \
+    --continue_train_paths ../output/interhand_bedlam_c/model_dump/snapshot_10.pth.tar  ../output/interhand_bedlam_c/model_dump/snapshot_8.pth.tar
+# --continue_train_paths ../output/interhand_bedlam_c/model_dump/snapshot_*.pth.tar

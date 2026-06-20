@@ -11,28 +11,33 @@ def _per_source_losses(raw_loss, meta_info):
     """Split per-sample losses by dataset source for separate monitoring.
 
     raw_loss: dict of loss tensors still carrying the batch dim (dim 0), BEFORE
-    any .mean(). Returns {'interhand': {k: float}, 'bedlam': {k: float}} where
-    each value is the mean loss over the samples of that source in the batch.
-    Returns None if source flags are absent (e.g. single-dataset training).
+    any .mean(). Returns {'interhand': {...}, 'bedlam': {...}, 'ubody': {...}}
+    ('ubody' only when meta_info carries is_ubody) where each value is the mean
+    loss over the samples of that source in the batch. Returns None if the
+    interhand/bedlam source flags are absent (e.g. single-dataset training).
     """
     if 'is_interhand' not in meta_info or 'is_bedlam' not in meta_info:
         return None
-    ih = meta_info['is_interhand'].detach().view(-1).float()
-    bl = meta_info['is_bedlam'].detach().view(-1).float()
-    out = {'interhand': {}, 'bedlam': {}}
+    masks = {
+        'interhand': meta_info['is_interhand'].detach().view(-1).float(),
+        'bedlam': meta_info['is_bedlam'].detach().view(-1).float(),
+    }
+    if 'is_ubody' in meta_info:
+        masks['ubody'] = meta_info['is_ubody'].detach().view(-1).float()
+    batch_n = next(iter(masks.values())).numel()
+    out = {src: {} for src in masks}
     for k, v in raw_loss.items():
         vd = v.detach()
-        if vd.ndim == 0 or vd.shape[0] != ih.numel():
+        if vd.ndim == 0 or vd.shape[0] != batch_n:
             continue
         # collapse every dim except batch -> per-sample scalar
         per_sample = vd.reshape(vd.shape[0], -1).mean(dim=1)
-        # meta_info flags may live on CPU under DataParallel; align device.
-        ih_d = ih.to(per_sample.device)
-        bl_d = bl.to(per_sample.device)
-        for src_name, mask in (('interhand', ih_d), ('bedlam', bl_d)):
-            denom = mask.sum()
+        for src_name, mask in masks.items():
+            # meta_info flags may live on CPU under DataParallel; align device.
+            m = mask.to(per_sample.device)
+            denom = m.sum()
             if denom.item() > 0:
-                out[src_name][k] = ((per_sample * mask).sum() / denom).item()
+                out[src_name][k] = ((per_sample * m).sum() / denom).item()
     return out
 
 
@@ -53,6 +58,8 @@ def _raise_nonfinite_loss(loss, total_loss, meta_info, logger, epoch, itr):
         batch_state.append('interhand=%.0f' % meta_info['is_interhand'].sum().detach().cpu().item())
     if 'is_bedlam' in meta_info:
         batch_state.append('bedlam=%.0f' % meta_info['is_bedlam'].sum().detach().cpu().item())
+    if 'is_ubody' in meta_info:
+        batch_state.append('ubody=%.0f' % meta_info['is_ubody'].sum().detach().cpu().item())
 
     msg = 'Non-finite total_loss before backward at epoch %d itr %d. %s %s' % (
         epoch,
@@ -91,7 +98,14 @@ def parse_args():
     parser.add_argument('--phase1_epochs', type=int, default=DEFAULT_PHASE1_EPOCHS,
                         help='手部微调 Phase 1 的 epoch 数；默认覆盖 10 epoch 短程混训')
     parser.add_argument('--train_face_modules', action='store_true',
-                        help='默认冻结 face 分支；需要 BEDLAM face/expression 微调时显式开启')
+                        help='默认冻结 face 分支；需要 UBody face/expression 微调时显式开启')
+    parser.add_argument('--no_train_hand_modules', action='store_true',
+                        help='冻结手部分支（face-only 阶段用）：手部三件套不进优化器、'
+                             '保持已加载的手权重不动；其名字仍在 snapshot 里保存，'
+                             '便于后续联合阶段暖启动')
+    parser.add_argument('--init_trained_path', type=str, default='',
+                        help='非续训(continue_train=False)时，额外暖加载一个 lightweight '
+                             'snapshot 的已训练手/脸模块（不续 epoch/optimizer）；用于阶段衔接')
     parser.add_argument('--no_phase1_hand_regressor', action='store_true',
                         help='Phase 1 不训练 hand_regressor，仅用于对比旧热身策略')
     parser.add_argument('--bedlam_max_samples', type=int, default=None)
@@ -154,17 +168,22 @@ def _configure_training_phase(trainer, phase, remaining_epochs):
     # (A-class stabilization): it is the soft-argmax module that diverges
     # mid-epoch, so a persistently smaller step protects it long after any
     # warmup window would have closed.
-    posnet_modules = ['hand_position_net']
-    normal_modules = ['hand_decoder']
+    posnet_modules = []
+    normal_modules = []
     special_modules = []
     phase_scale = 1.0 if phase == 1 else 0.1
-    if phase == 1:
-        if cfg.phase1_train_hand_regressor:
+    eta_min = 1e-6 if phase == 1 else 1e-7
+    # Hand branch is gated by cfg.train_hand_modules (default True). When False
+    # (face-only stage) the hand modules are frozen elsewhere and simply never
+    # enter the optimizer here. Default path is unchanged.
+    if getattr(cfg, 'train_hand_modules', True):
+        posnet_modules.append('hand_position_net')
+        normal_modules.append('hand_decoder')
+        if phase == 1:
+            if cfg.phase1_train_hand_regressor:
+                special_modules.append('hand_regressor')
+        else:
             special_modules.append('hand_regressor')
-        eta_min = 1e-6
-    else:
-        special_modules.append('hand_regressor')
-        eta_min = 1e-7
     normal_lr = cfg.lr * phase_scale
     special_lr = cfg.lr * cfg.lr_mult * phase_scale
     posnet_lr = cfg.lr * cfg.posnet_lr_mult * phase_scale
@@ -252,6 +271,7 @@ def main():
         phase1_epochs=args.phase1_epochs,
         phase1_train_hand_regressor=not args.no_phase1_hand_regressor,
         train_face_modules=args.train_face_modules,
+        train_hand_modules=not args.no_train_hand_modules,
         use_weighted_dataset_sampling=not args.disable_weighted_dataset_sampling,
         posnet_lr_mult=args.posnet_lr_mult,
         posnet_grad_clip=args.posnet_grad_clip,
@@ -272,6 +292,8 @@ def main():
         cfg.use_hand_rotmat_pose_loss = True
     if args.hand_rotmat_pose_loss_weight is not None:
         cfg.hand_rotmat_pose_loss_weight = args.hand_rotmat_pose_loss_weight
+    if args.init_trained_path:
+        cfg.init_trained_path = args.init_trained_path
 
     if args.continue_train and args.continue_train_path:
         cfg.continue_train_path = args.continue_train_path
@@ -378,10 +400,12 @@ def main():
                         'batch_interhand: %.0f' % meta_info['is_interhand'].sum().detach().cpu().item(),
                         'batch_bedlam: %.0f' % meta_info['is_bedlam'].sum().detach().cpu().item(),
                     ]
+                    if 'is_ubody' in meta_info:
+                        screen += ['batch_ubody: %.0f' % meta_info['is_ubody'].sum().detach().cpu().item()]
                 screen += ['%s: %.4f' % ('loss_' + k.lstrip('_'), v.detach()) for k, v in loss.items()]
                 trainer.logger.info(' '.join(screen))
                 if per_source is not None:
-                    for src_name in ('interhand', 'bedlam'):
+                    for src_name in ('interhand', 'bedlam', 'ubody'):
                         src_losses = per_source.get(src_name, {})
                         if src_losses:
                             line = ['  [%s]' % src_name] + [

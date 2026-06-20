@@ -100,6 +100,25 @@ class Model(nn.Module):
             'face_regressor',
         ]
 
+        # Face-only staging: when cfg.train_hand_modules is False, freeze the hand
+        # branch like the backbone (no grad + eval BN, handled by freeze_modules /
+        # the train() override / _verify_freeze_status) by moving it into
+        # frozen_modules and out of the trainable lists. Its NAMES stay in
+        # trainable_module_names above, so save_model still writes the (warm) hand
+        # tensors into the snapshot — letting a later joint stage warm-start hands.
+        if not getattr(cfg, 'train_hand_modules', True):
+            self.frozen_modules = self.frozen_modules + [
+                'hand_position_net', 'hand_decoder', 'hand_regressor',
+            ]
+            self.trainable_modules = [
+                m for m in self.trainable_modules
+                if m not in (self.hand_position_net, self.hand_decoder)
+            ]
+            self.special_trainable_modules = [
+                m for m in self.special_trainable_modules
+                if m is not self.hand_regressor
+            ]
+
         self.training_phase = 1
 
     def set_training_phase(self, phase):
@@ -112,7 +131,7 @@ class Model(nn.Module):
         
         if phase == 1:
             regressor_trainable = {
-                'hand_regressor': getattr(cfg, 'phase1_train_hand_regressor', True),
+                'hand_regressor': getattr(cfg, 'train_hand_modules', True) and getattr(cfg, 'phase1_train_hand_regressor', True),
                 'face_regressor': getattr(cfg, 'train_face_modules', False),
             }
             for module_name, trainable in regressor_trainable.items():
@@ -125,7 +144,7 @@ class Model(nn.Module):
         elif phase == 2:
             # 解冻 regressor
             regressor_trainable = {
-                'hand_regressor': True,
+                'hand_regressor': getattr(cfg, 'train_hand_modules', True),
                 'face_regressor': getattr(cfg, 'train_face_modules', False),
             }
             for module_name, trainable in regressor_trainable.items():
@@ -461,13 +480,20 @@ class Model(nn.Module):
         roi_rhand_center, roi_rhand_size = rhand_bbox_center, rhand_bbox_size
         if getattr(cfg, 'inject_gt_hand_bbox', False) and 'is_hand_only' in meta_info \
                 and 'lhand_bbox_center' in targets:
-            hand_only = meta_info['is_hand_only'].view(-1) > 0
-            l_use = (hand_only & (meta_info['lhand_bbox_valid'].view(-1) > 0)).view(-1, 1)
-            r_use = (hand_only & (meta_info['rhand_bbox_valid'].view(-1) > 0)).view(-1, 1)
-            roi_lhand_center = torch.where(l_use, targets['lhand_bbox_center'], roi_lhand_center)
-            roi_lhand_size = torch.where(l_use, targets['lhand_bbox_size'], roi_lhand_size)
-            roi_rhand_center = torch.where(r_use, targets['rhand_bbox_center'], roi_rhand_center)
-            roi_rhand_size = torch.where(r_use, targets['rhand_bbox_size'], roi_rhand_size)
+            box_device = roi_lhand_center.device
+            hand_only = meta_info['is_hand_only'].to(box_device).view(-1) > 0
+            l_valid = meta_info['lhand_bbox_valid'].to(box_device).view(-1) > 0
+            r_valid = meta_info['rhand_bbox_valid'].to(box_device).view(-1) > 0
+            l_use = (hand_only & l_valid).view(-1, 1)
+            r_use = (hand_only & r_valid).view(-1, 1)
+            gt_lhand_center = targets['lhand_bbox_center'].to(box_device)
+            gt_lhand_size = targets['lhand_bbox_size'].to(box_device)
+            gt_rhand_center = targets['rhand_bbox_center'].to(box_device)
+            gt_rhand_size = targets['rhand_bbox_size'].to(box_device)
+            roi_lhand_center = torch.where(l_use, gt_lhand_center, roi_lhand_center)
+            roi_lhand_size = torch.where(l_use, gt_lhand_size, roi_lhand_size)
+            roi_rhand_center = torch.where(r_use, gt_rhand_center, roi_rhand_center)
+            roi_rhand_size = torch.where(r_use, gt_rhand_size, roi_rhand_size)
 
         lhand_bbox = restore_bbox(roi_lhand_center, roi_lhand_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
         rhand_bbox = restore_bbox(roi_rhand_center, roi_rhand_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space

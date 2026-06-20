@@ -391,7 +391,8 @@ class UBody_Part(torch.utils.data.Dataset):
                          'smplx_joint_trunc': smplx_joint_trunc, 'smplx_pose_valid': smplx_pose_valid,
                          'smplx_shape_valid': float(smplx_shape_valid), 'smplx_expr_valid': float(smplx_expr_valid),
                          'is_3D': float(False), 'lhand_bbox_valid': lhand_bbox_valid,
-                         'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid}
+                         'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid,
+                         'is_interhand': float(False), 'is_bedlam': float(False), 'is_ubody': float(True)}
             return inputs, targets, meta_info
 
         # test mode
@@ -498,6 +499,7 @@ class UBody_Part(torch.utils.data.Dataset):
                          'smplx_shape_valid': float(smplx_shape_valid), 'smplx_expr_valid': float(smplx_expr_valid),
                          'is_3D': float(False), 'lhand_bbox_valid': lhand_bbox_valid,
                          'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid,
+                         'is_interhand': float(False), 'is_bedlam': float(False), 'is_ubody': float(True),
                          'bb2img_trans': bb2img_trans}
             return inputs, targets, meta_info
 
@@ -756,4 +758,3 @@ class UBody(Dataset):
         f.write('MPVPE (Face): %.2f mm\n' % np.mean(eval_result['mpvpe_face']))
         f.write('PA MPJPE (Body): %.2f mm\n' % np.mean(eval_result['pa_mpjpe_body']))
         f.write('PA MPJPE (Hands): %.2f mm\n' % np.mean(eval_result['pa_mpjpe_hand']))
-

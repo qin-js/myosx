@@ -24,11 +24,11 @@ class Config:
     # dataset setting
     dataset_list = ['Human36M', 'MSCOCO', 'MPII', 'AGORA', 'EHF', 'UBody', 'HAA500', 'BEDLAM', 'InterHand26M']
     # trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
-    trainset_3d = ['BEDLAM', 'InterHand26M']; trainset_2d = []; testset = 'EHF'
+    trainset_3d = ['UBody']; trainset_2d = []; testset = 'EHF'  # Stage2 冻手训脸=UBody only；手部基线配方=['BEDLAM','InterHand26M']
     continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_49.pth.tar"
 
     ## UBody setting
-    train_sample_interval = 10
+    train_sample_interval = 1
     test_sample_interval = 100
     make_same_len = False
     ubody_benchmark = False
@@ -83,6 +83,12 @@ class Config:
     interhand_skip_missing_images = True
     interhand_use_human_annot = True
     interhand_require_mano = True
+    # Which InterHand annotation split the loader reads WHEN used as the eval
+    # testset (file paths only; data_split stays "test" so augmentation is
+    # identity). Default "test" = official benchmark. Set to "train" (via
+    # test.py --interhand_eval_split) for an immediate, contaminated
+    # upper-bound signal when the official test annotations aren't downloaded.
+    interhand_eval_split = 'test'
     use_weighted_dataset_sampling = True
     trainset_3d_sample_prob = {
         'BEDLAM': 0.6,
@@ -93,6 +99,19 @@ class Config:
     phase1_epochs = 10
     phase1_train_hand_regressor = True
     train_face_modules = False
+    # Stage gating, symmetric to train_face_modules. When False, the hand branch
+    # (hand_position_net / hand_decoder / hand_regressor) is frozen like the
+    # backbone (no grad, eval BN) and kept OUT of the optimizer, but its names
+    # stay in trainable_module_names so the lightweight snapshot still carries
+    # the (warm) hand weights — letting a later joint stage warm-start from it.
+    # Used by the face-only stage: load _c's hands, freeze them, train only face.
+    train_hand_modules = True
+    # Optional warm-start (only consulted when continue_train is False): load the
+    # trained hand/face tensors from a lightweight snapshot WITHOUT resuming the
+    # epoch counter or optimizer state. Used to chain training stages
+    # (e.g. face-only stage warm-starts hands from _c; joint stage warm-starts
+    # both hands+face from the face-only stage).
+    init_trained_path = ""
     # A-class stabilization for the soft-argmax hand_position_net, which is the
     # module observed to diverge mid-epoch (depth bins flip). It gets its own
     # optimizer group at lr * posnet_lr_mult and its own tighter grad clip, so

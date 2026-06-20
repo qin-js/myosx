@@ -15,7 +15,7 @@ from common.utils.preprocessing import (
     process_bbox,
     process_db_coord,
 )
-from common.utils.transforms import cam2pixel, transform_joint_to_other_db, world2cam
+from common.utils.transforms import cam2pixel, rigid_align, transform_joint_to_other_db, world2cam
 
 
 class InterHand26M(torch.utils.data.Dataset):
@@ -29,6 +29,18 @@ class InterHand26M(torch.utils.data.Dataset):
     def __init__(self, transform, data_split):
         self.transform = transform
         self.data_split = data_split
+        # `data_split` drives augmentation (train -> random aug; otherwise
+        # identity, see common/utils/preprocessing.augmentation). `annot_split`
+        # drives which annotation/image FILES are read. They are normally the
+        # same, but for evaluation we want identity augmentation while still
+        # being able to point the file loader at a different split: when the
+        # loader is built as the testset (data_split=="test") the files come
+        # from cfg.interhand_eval_split (default "test"). This lets us run an
+        # (already-seen, upper-bound) eval on the train annotations without
+        # turning on random flip/rot/scale, which would swap left/right hands.
+        self.annot_split = data_split
+        if data_split == "test":
+            self.annot_split = getattr(cfg, "interhand_eval_split", "test")
         self.img_path = getattr(
             cfg,
             "interhand_img_dir",
@@ -131,10 +143,10 @@ class InterHand26M(torch.utils.data.Dataset):
         return np.array([0, 0, img_width, img_height], dtype=np.float32)
 
     def _annotation_dir(self):
-        return osp.join(self.annot_path, self.data_split)
+        return osp.join(self.annot_path, self.annot_split)
 
     def _aid_list(self, db):
-        aid_path = osp.join(self._annotation_dir(), "aid_human_annot_%s.txt" % self.data_split)
+        aid_path = osp.join(self._annotation_dir(), "aid_human_annot_%s.txt" % self.annot_split)
         if self.use_human_annot and osp.isfile(aid_path):
             with open(aid_path, "r") as f:
                 aids = [int(line.strip()) for line in f if line.strip()]
@@ -199,7 +211,7 @@ class InterHand26M(torch.utils.data.Dataset):
         ann = db.anns[aid]
         img = db.loadImgs(ann["image_id"])[0]
         img_width, img_height = img["width"], img["height"]
-        img_path = osp.join(self.img_path, self.data_split, img["file_name"])
+        img_path = osp.join(self.img_path, self.annot_split, img["file_name"])
         if self.skip_missing_images and not osp.isfile(img_path):
             return None
 
@@ -258,10 +270,10 @@ class InterHand26M(torch.utils.data.Dataset):
 
     def load_data(self):
         annot_dir = self._annotation_dir()
-        data_json = osp.join(annot_dir, "InterHand2.6M_%s_data.json" % self.data_split)
-        camera_json = osp.join(annot_dir, "InterHand2.6M_%s_camera.json" % self.data_split)
-        joint_json = osp.join(annot_dir, "InterHand2.6M_%s_joint_3d.json" % self.data_split)
-        mano_json = osp.join(annot_dir, "InterHand2.6M_%s_MANO_NeuralAnnot.json" % self.data_split)
+        data_json = osp.join(annot_dir, "InterHand2.6M_%s_data.json" % self.annot_split)
+        camera_json = osp.join(annot_dir, "InterHand2.6M_%s_camera.json" % self.annot_split)
+        joint_json = osp.join(annot_dir, "InterHand2.6M_%s_joint_3d.json" % self.annot_split)
+        mano_json = osp.join(annot_dir, "InterHand2.6M_%s_MANO_NeuralAnnot.json" % self.annot_split)
 
         db = COCO(data_json)
         with open(camera_json, "r") as f:
@@ -302,7 +314,7 @@ class InterHand26M(torch.utils.data.Dataset):
                 "No InterHand26M samples were loaded. Check cfg.interhand_annot_path, "
                 "cfg.interhand_img_dir, and cfg.interhand_skip_missing_images."
             )
-        print("Loaded InterHand26M %s samples: %d" % (self.data_split, len(datalist)))
+        print("Loaded InterHand26M %s samples: %d" % (self.annot_split, len(datalist)))
         return datalist
 
     def process_hand_bbox(self, bbox, do_flip, img_shape, img2bb_trans):
@@ -515,12 +527,117 @@ class InterHand26M(torch.utils.data.Dataset):
             "dataset_id": float(1),
             "is_interhand": float(True),
             "is_bedlam": float(False),
+            "is_ubody": float(False),
             "is_hand_only": float(True),
         }
         return inputs, targets, meta_info
 
+    # Per-hand joint order produced by smpl_x.orig_hand_regressor: wrist first,
+    # then each finger base->tip. GT (joint_set["joints_name"], per hand) is
+    # finger tip->base with the wrist LAST, so GT is remapped into this order
+    # by name before comparing (see _build_hand_perm).
+    _PRED_HAND_NAMES = (
+        "Wrist",
+        "Thumb_1", "Thumb_2", "Thumb_3", "Thumb_4",
+        "Index_1", "Index_2", "Index_3", "Index_4",
+        "Middle_1", "Middle_2", "Middle_3", "Middle_4",
+        "Ring_1", "Ring_2", "Ring_3", "Ring_4",
+        "Pinky_1", "Pinky_2", "Pinky_3", "Pinky_4",
+    )
+
+    def _build_hand_perm(self):
+        """Index map reordering a per-hand GT (21,3) array (in joint_set order)
+        into orig_hand_regressor order. Built BY NAME so a wrong layout fails
+        loudly (list.index raises). Left/right share one map: the names match
+        after dropping the 'R_'/'L_' prefix."""
+        right_idx = self.joint_set["part_idx"]["right"]
+        gt_names = [self.joint_set["joints_name"][i][2:] for i in right_idx]
+        return np.array([gt_names.index(nm) for nm in self._PRED_HAND_NAMES], dtype=np.int64)
+
     def evaluate(self, outs, cur_sample_idx):
-        return {}
+        """Hand-pose metrics vs InterHand26M GT 3D joints. InterHand has no GT
+        SMPL-X mesh, so we regress 21 hand joints from the PREDICTED mesh
+        (smpl_x.orig_hand_regressor) and compare to the dataset's GT joint_cam.
+        Per hand: PA-MPJPE (Procrustes, mirrors EHF) and wrist-relative MPJPE,
+        both in mm. Hands whose wrist is invalid are skipped (many single-hand
+        frames). Returns a dict of lists; test.py concatenates across batches."""
+        if not hasattr(self, "_gt_hand_perm"):
+            self._gt_hand_perm = self._build_hand_perm()
+        gt_perm = self._gt_hand_perm
+
+        eval_result = {
+            "pa_mpjpe_hand": [], "pa_mpjpe_lhand": [], "pa_mpjpe_rhand": [],
+            "mpjpe_hand": [], "mpjpe_lhand": [], "mpjpe_rhand": [],
+            "n_lhand": [], "n_rhand": [],
+        }
+        for n in range(len(outs)):
+            annot = self.datalist[cur_sample_idx + n]
+            mesh_out = outs[n]["smplx_mesh_cam"]  # (V,3) meters, cam coords
+            joint_cam = annot["joint_cam"]        # (42,3) mm, cam coords
+            joint_valid = annot["joint_valid"]    # (42,1)
+
+            for side in ("right", "left"):
+                part_idx = self.joint_set["part_idx"][side]
+                root_idx = self.joint_set["root_idx"][side]
+                if joint_valid[root_idx, 0] <= 0:
+                    continue  # wrist invalid -> cannot make this hand wrist-relative
+
+                # GT: wrist-relative (wrist is the LAST of the 21), mm -> m,
+                # then reorder into prediction-joint order.
+                gt_hand = joint_cam[part_idx]
+                gt_hand = (gt_hand - gt_hand[-1:]) / 1000.0
+                gt_hand = gt_hand[gt_perm]
+                valid = (joint_valid[part_idx, 0] > 0)[gt_perm]
+                idx = np.where(valid)[0]
+                if idx.size < 1:
+                    continue
+
+                # Prediction: 21 hand joints regressed from the predicted mesh
+                # (prediction order, meters); wrist (row 0) relative for MPJPE.
+                pred_hand = np.dot(smpl_x.orig_hand_regressor[side], mesh_out)
+                pred_rel = pred_hand - pred_hand[0:1]
+
+                gt_v = gt_hand[idx]
+                mp = np.sqrt(((pred_rel[idx] - gt_v) ** 2).sum(1)).mean() * 1000.0
+
+                tag = "lhand" if side == "left" else "rhand"
+                eval_result["mpjpe_" + tag].append(mp)
+                eval_result["mpjpe_hand"].append(mp)
+                eval_result["n_" + tag].append(1)
+
+                if idx.size >= 3:  # Procrustes is underdetermined below 3 points
+                    pa = np.sqrt(((rigid_align(pred_hand[idx], gt_v) - gt_v) ** 2).sum(1)).mean() * 1000.0
+                    eval_result["pa_mpjpe_" + tag].append(pa)
+                    eval_result["pa_mpjpe_hand"].append(pa)
+
+        return eval_result
 
     def print_eval_result(self, eval_result):
-        print("InterHand26M evaluation is not implemented for this SMPL-X loader.")
+        def m(key):
+            vals = eval_result.get(key, [])
+            return float(np.mean(vals)) if len(vals) else float("nan")
+
+        n_l = len(eval_result.get("n_lhand", []))
+        n_r = len(eval_result.get("n_rhand", []))
+        lines = [
+            "--InterHand26M Eval Results (%s split)--" % self.annot_split,
+            "Evaluated hands: %d (L: %d, R: %d)" % (n_l + n_r, n_l, n_r),
+            "PA MPJPE (Hands): %.2f mm" % m("pa_mpjpe_hand"),
+            "PA MPJPE (Left):  %.2f mm" % m("pa_mpjpe_lhand"),
+            "PA MPJPE (Right): %.2f mm" % m("pa_mpjpe_rhand"),
+            "MPJPE wrist-rel (Hands): %.2f mm" % m("mpjpe_hand"),
+            "MPJPE wrist-rel (Left):  %.2f mm" % m("mpjpe_lhand"),
+            "MPJPE wrist-rel (Right): %.2f mm" % m("mpjpe_rhand"),
+        ]
+        if self.annot_split == "train":
+            lines.append(
+                "NOTE: 'train' split was seen during training -> contaminated "
+                "upper bound, NOT a generalization metric."
+            )
+        msg = "\n".join(lines)
+        print(msg)
+        try:
+            with open(osp.join(cfg.result_dir, "result.txt"), "w") as f:
+                f.write(msg + "\n")
+        except Exception as e:
+            print("[InterHand26M] could not write result.txt: %s" % e)

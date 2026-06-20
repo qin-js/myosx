@@ -443,6 +443,7 @@ class BEDLAM(torch.utils.data.Dataset):
             "dataset_id": float(0),
             "is_interhand": float(False),
             "is_bedlam": float(True),
+            "is_ubody": float(False),
             "is_hand_only": float(False),
         }
         return inputs, targets, meta_info

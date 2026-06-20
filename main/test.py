@@ -7,6 +7,8 @@ import numpy as np
 import cv2
 import os.path as osp
 import os
+import logging
+from glob import glob
 
 def visualize_debug(inputs, targets, meta_info, save_dir='debug_vis', sample_idx=0):
     """
@@ -145,11 +147,18 @@ def parse_args():
     parser.add_argument('--test_batch_size', type=int, default=16 )
     parser.add_argument('--encoder_setting', type=str, default='osx_l', choices=['osx_b', 'osx_l'])
     parser.add_argument('--decoder_setting', type=str, default='wo_face_decoder', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
-    parser.add_argument('--testset', type=str, default='EHF', choices=['EHF', 'HAA500'])
+    parser.add_argument('--testset', type=str, default='EHF', choices=['EHF', 'HAA500', 'InterHand26M'])
+    parser.add_argument('--interhand_eval_split', type=str, default='test', choices=['train', 'val', 'test'],
+                        help='InterHand26M: which annotation split to load for eval (files only; '
+                             'augmentation stays identity). "train" = contaminated upper bound '
+                             'when the eval model trained on train.')
     parser.add_argument('--agora_benchmark', action='store_true')
     parser.add_argument('--debug_vis', action='store_true')
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l_wo_face_decoder.pth.tar')
     parser.add_argument('--continue_train_path', type=str, default="")
+    parser.add_argument('--continue_train_paths', type=str, nargs='+', default=None,
+                        help='一次评估多个训练 checkpoint。支持空格分隔多个路径，也支持通配符；'
+                             '每个 checkpoint 的结果会保存到 result/<checkpoint_name>/')
     parser.add_argument('--max_eval_iters', type=int, default=-1,
                         help='只评估前 N 个 batch（快速查看用）；<=0 表示评估整个 testset')
     args = parser.parse_args()
@@ -165,22 +174,95 @@ def parse_args():
 
     return args
 
-def main():
-    print('### Argument parse and create log ###')
-    args = parse_args()
-    cfg.set_args(args.gpu_ids)
-    cfg.set_additional_args(exp_name=args.exp_name,
-                            test_batch_size=args.test_batch_size,
-                            encoder_setting=args.encoder_setting,
-                            decoder_setting=args.decoder_setting,
-                            pretrained_model_path=args.pretrained_model_path,
-                            agora_benchmark=args.agora_benchmark,
-                            testset=args.testset,
-                            )
-    if args.continue_train_path:
-        cfg.continue_train_path = args.continue_train_path
-    cudnn.benchmark = True
-    from common.base import Tester
+
+def _expand_checkpoint_paths(args):
+    raw_paths = []
+    if args.continue_train_paths:
+        raw_paths.extend(args.continue_train_paths)
+    elif args.continue_train_path:
+        raw_paths.append(args.continue_train_path)
+
+    paths = []
+    for raw_path in raw_paths:
+        matches = sorted(glob(raw_path))
+        if matches:
+            paths.extend(matches)
+        else:
+            paths.append(raw_path)
+
+    seen = set()
+    unique_paths = []
+    for path in paths:
+        path = osp.normpath(path)
+        if path not in seen:
+            unique_paths.append(path)
+            seen.add(path)
+    return unique_paths
+
+
+def _checkpoint_run_name(checkpoint_path):
+    if not checkpoint_path:
+        return 'pretrained'
+    name = osp.basename(checkpoint_path)
+    for suffix in ('.pth.tar', '.pth', '.tar', '.ckpt'):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    return name.replace(' ', '_')
+
+
+def _testset_result_name(args):
+    if args.testset == 'InterHand26M':
+        return f'{args.testset}_{args.interhand_eval_split}_result.txt'
+    return f'{args.testset}_result.txt'
+
+
+def _set_eval_output_dirs(base_result_dir, base_vis_dir, base_log_dir,
+                          run_name):
+    result_dir = osp.join(base_result_dir, run_name)
+    vis_dir = osp.join(base_vis_dir, run_name)
+    log_dir = osp.join(base_log_dir, run_name)
+
+    cfg.result_dir = result_dir
+    cfg.vis_dir = vis_dir
+    cfg.log_dir = log_dir
+
+    os.makedirs(cfg.result_dir, exist_ok=True)
+    os.makedirs(cfg.vis_dir, exist_ok=True)
+    os.makedirs(cfg.log_dir, exist_ok=True)
+
+
+def _set_base_output_dirs(base_result_dir, base_vis_dir, base_log_dir):
+    cfg.result_dir = base_result_dir
+    cfg.vis_dir = base_vis_dir
+    cfg.log_dir = base_log_dir
+
+    os.makedirs(cfg.result_dir, exist_ok=True)
+    os.makedirs(cfg.vis_dir, exist_ok=True)
+    os.makedirs(cfg.log_dir, exist_ok=True)
+
+
+def _rename_result_file(result_filename):
+    target_path = osp.join(cfg.result_dir, result_filename)
+    candidate_names = ['result.txt', 'HAA500_result.txt']
+    for name in candidate_names:
+        src_path = osp.join(cfg.result_dir, name)
+        if osp.isfile(src_path):
+            if osp.abspath(src_path) != osp.abspath(target_path):
+                os.replace(src_path, target_path)
+            return target_path
+    return None
+
+
+def _reset_test_logger_handlers():
+    logger = logging.getLogger('test_logs.txt')
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+
+
+def _run_eval_for_current_checkpoint(args, Tester, result_filename):
+    _reset_test_logger_handlers()
     tester = Tester()
     tester._make_batch_generator()
     tester._make_model()
@@ -201,7 +283,7 @@ def main():
             batch_size = inputs['img'].shape[0]
             for i in range(min(3, batch_size)):  # 最多可视化前3个样本
                 visualize_debug(inputs, targets, meta_info, 
-                              save_dir=osp.join(cfg.output_dir, 'debug_vis'),
+                              save_dir=osp.join(cfg.vis_dir, 'debug_vis'),
                               sample_idx=i)
             debug_vis_done = True
 
@@ -228,6 +310,61 @@ def main():
             break
 
     tester._print_eval_result(eval_result)
+    result_path = _rename_result_file(result_filename)
+    if result_path:
+        print(f"[eval] result_file: {result_path}")
+    return eval_result
+
+
+def main():
+    print('### Argument parse and create log ###')
+    args = parse_args()
+    use_pytorch_decoder = args.decoder_setting == 'pytorch'
+    checkpoint_paths = _expand_checkpoint_paths(args) if use_pytorch_decoder else []
+
+    cfg.set_args(args.gpu_ids)
+    cfg.set_additional_args(exp_name=args.exp_name,
+                            test_batch_size=args.test_batch_size,
+                            encoder_setting=args.encoder_setting,
+                            decoder_setting=args.decoder_setting,
+                            pretrained_model_path=args.pretrained_model_path,
+                            agora_benchmark=args.agora_benchmark,
+                            testset=args.testset,
+                            )
+    cfg.interhand_eval_split = args.interhand_eval_split
+    cudnn.benchmark = True
+    from common.base import Tester
+
+    base_result_dir = cfg.result_dir
+    base_vis_dir = cfg.vis_dir
+    base_log_dir = cfg.log_dir
+    result_filename = _testset_result_name(args)
+
+    if not use_pytorch_decoder:
+        if args.continue_train_path or args.continue_train_paths:
+            print("[eval] decoder_setting != pytorch，忽略 continue_train_path(s)，只评估 pretrained_model_path")
+        cfg.continue_train_path = ""
+        _set_base_output_dirs(base_result_dir, base_vis_dir, base_log_dir)
+        _run_eval_for_current_checkpoint(args, Tester, result_filename)
+        return
+
+    if not checkpoint_paths:
+        cfg.continue_train_path = ""
+        _set_eval_output_dirs(base_result_dir, base_vis_dir, base_log_dir,
+                              'pretrained')
+        _run_eval_for_current_checkpoint(args, Tester, result_filename)
+        return
+
+    for checkpoint_path in checkpoint_paths:
+        run_name = _checkpoint_run_name(checkpoint_path)
+        cfg.continue_train_path = checkpoint_path
+        _set_eval_output_dirs(base_result_dir, base_vis_dir, base_log_dir,
+                              run_name)
+
+        print("=" * 80)
+        print(f"[eval] checkpoint: {checkpoint_path}")
+        print(f"[eval] result_dir: {cfg.result_dir}")
+        _run_eval_for_current_checkpoint(args, Tester, result_filename)
 
 if __name__ == "__main__":
     main()

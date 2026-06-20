@@ -581,6 +581,14 @@ class Trainer(Base):
             start_epoch = 0
             if cfg.pretrained_model_path is not None:
                 self._load_pretrained_frozen(model, cfg.pretrained_model_path)
+            # Optional stage-chaining warm-start: load trained hand/face tensors
+            # from a previous stage's lightweight snapshot WITHOUT resuming the
+            # epoch/optimizer. Applied on top of the frozen backbone so the warm
+            # modules override their freshly-initialized counterparts.
+            if getattr(cfg, 'init_trained_path', ''):
+                self.logger.info(
+                    f"Warm-start: loading trained modules from {cfg.init_trained_path}")
+                self._load_lightweight_trained_modules(model, cfg.init_trained_path)
 
         # 3. 冻结模块
         model.module.freeze_modules()
@@ -681,7 +689,19 @@ class Tester(Base):
                 k = k.replace('module.backbone', 'module.encoder').replace('body_rotation_net', 'body_regressor').replace(
                     'hand_rotation_net', 'hand_regressor')
                 new_state_dict[k] = v
-            model.load_state_dict(new_state_dict, strict=False)
+            missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+            self.logger.info(
+                "  checkpoint tensors: loaded=%d missing=%d unexpected=%d" % (
+                    len(new_state_dict), len(missing), len(unexpected)))
+            hand_missing = [k for k in missing if 'hand_' in k]
+            if hand_missing:
+                self.logger.warning("  ⚠️  hand-related missing tensors: %d" % len(hand_missing))
+                for k in hand_missing[:10]:
+                    self.logger.warning("     %s" % k)
+            if unexpected:
+                self.logger.warning("  ⚠️  unexpected tensors: %d" % len(unexpected))
+                for k in unexpected[:10]:
+                    self.logger.warning("     %s" % k)
             model.eval()
 
             self.model = model
