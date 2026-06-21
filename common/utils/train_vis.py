@@ -5,6 +5,8 @@ Saves one diagnostic image per source after each epoch:
     to verify the (possibly GT-injected) hand ROI actually tracks the hands.
   - BEDLAM: side-by-side [original | predicted mesh | GT mesh] on the same crop,
     to watch how far the prediction is from ground truth as training progresses.
+  - UBody: face-box/keypoint diagnostics plus a zoomed face crop, to verify
+    face-only fine-tuning sees valid face supervision.
 
 The GT mesh that BEDLAM stores (``smplx_mesh_cam``) lives in the *original*
 camera frame, while the model's predicted mesh lives in the normalized virtual
@@ -202,6 +204,158 @@ def _label(img, text, cv2):
     return img
 
 
+def _draw_xyxy(img, bbox, color, cv2, thickness=2):
+    h, w = img.shape[:2]
+    b = np.asarray(bbox, dtype=np.float32).reshape(4)
+    x0 = int(np.clip(b[0], 0, w - 1)); y0 = int(np.clip(b[1], 0, h - 1))
+    x1 = int(np.clip(b[2], 0, w - 1)); y1 = int(np.clip(b[3], 0, h - 1))
+    cv2.rectangle(img, (x0, y0), (x1, y1), color, thickness)
+
+
+def _bbox_center_size_hm_to_img(center, size):
+    center = np.asarray(center, dtype=np.float32).reshape(2)
+    size = np.asarray(size, dtype=np.float32).reshape(2)
+    x0 = (center[0] - size[0] * 0.5) / cfg.output_hm_shape[2] * cfg.input_img_shape[1]
+    y0 = (center[1] - size[1] * 0.5) / cfg.output_hm_shape[1] * cfg.input_img_shape[0]
+    x1 = (center[0] + size[0] * 0.5) / cfg.output_hm_shape[2] * cfg.input_img_shape[1]
+    y1 = (center[1] + size[1] * 0.5) / cfg.output_hm_shape[1] * cfg.input_img_shape[0]
+    return np.asarray([x0, y0, x1, y1], dtype=np.float32)
+
+
+def _joints_hm_to_img(joints):
+    joints = np.asarray(joints, dtype=np.float32).copy()
+    joints[:, 0] = joints[:, 0] / cfg.output_hm_shape[2] * cfg.input_img_shape[1]
+    joints[:, 1] = joints[:, 1] / cfg.output_hm_shape[1] * cfg.input_img_shape[0]
+    return joints
+
+
+def _draw_joints(img, joints, valid, color, cv2, radius=2):
+    h, w = img.shape[:2]
+    joints = np.asarray(joints, dtype=np.float32)
+    valid = np.asarray(valid).reshape(-1) > 0
+    for pt, ok in zip(joints, valid):
+        if not ok or not np.isfinite(pt[:2]).all():
+            continue
+        px, py = int(pt[0]), int(pt[1])
+        if 0 <= px < w and 0 <= py < h:
+            cv2.circle(img, (px, py), radius, color, -1)
+
+
+def _crop_rect_from_boxes(boxes, img_shape, margin=0.35):
+    h, w = img_shape[:2]
+    valid = []
+    for b in boxes:
+        if b is None:
+            continue
+        b = np.asarray(b, dtype=np.float32).reshape(4)
+        if np.isfinite(b).all() and b[2] > b[0] and b[3] > b[1]:
+            valid.append(b)
+    if not valid:
+        return np.asarray([0, 0, w - 1, h - 1], dtype=np.float32)
+    b = np.stack(valid)
+    x0, y0 = b[:, 0].min(), b[:, 1].min()
+    x1, y1 = b[:, 2].max(), b[:, 3].max()
+    bw, bh = x1 - x0, y1 - y0
+    pad = max(bw, bh) * margin
+    cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+    side = max(bw, bh) + 2 * pad
+    x0, y0 = cx - side * 0.5, cy - side * 0.5
+    x1, y1 = cx + side * 0.5, cy + side * 0.5
+    return np.asarray([
+        np.clip(x0, 0, w - 1),
+        np.clip(y0, 0, h - 1),
+        np.clip(x1, 1, w),
+        np.clip(y1, 1, h),
+    ], dtype=np.float32)
+
+
+def _transform_xyxy_to_crop(bbox, crop, dst_w, dst_h):
+    b = np.asarray(bbox, dtype=np.float32).reshape(4)
+    x0, y0, x1, y1 = crop
+    scale_x = dst_w / max(float(x1 - x0), 1.0)
+    scale_y = dst_h / max(float(y1 - y0), 1.0)
+    return np.asarray([
+        (b[0] - x0) * scale_x,
+        (b[1] - y0) * scale_y,
+        (b[2] - x0) * scale_x,
+        (b[3] - y0) * scale_y,
+    ], dtype=np.float32)
+
+
+def _transform_joints_to_crop(joints, crop, dst_w, dst_h):
+    out = np.asarray(joints, dtype=np.float32).copy()
+    x0, y0, x1, y1 = crop
+    out[:, 0] = (out[:, 0] - x0) * (dst_w / max(float(x1 - x0), 1.0))
+    out[:, 1] = (out[:, 1] - y0) * (dst_h / max(float(y1 - y0), 1.0))
+    return out
+
+
+def _save_ubody_panel(model, db, epoch, out_dir, cv2):
+    sample = None
+    for idx in range(min(len(db), 50)):
+        cand = db[idx]
+        meta_info = cand[2]
+        face_valid = float(np.asarray(meta_info.get("face_bbox_valid", 0.0)).reshape(-1)[0])
+        face_trunc = np.asarray(meta_info.get("joint_trunc", np.zeros((smpl_x.joint_num, 1))))
+        if face_valid > 0 and face_trunc[smpl_x.joint_part["face"]].sum() > 0:
+            sample = cand
+            break
+    if sample is None:
+        sample = db[0]
+
+    inputs, targets, meta_info = sample
+    out = _run_test_forward(model, inputs, targets, meta_info)
+    base = _to_bgr_uint8(out["img"][0])
+    h, w = base.shape[:2]
+
+    face_idx = smpl_x.joint_part["face"]
+    face_valid = float(np.asarray(meta_info.get("face_bbox_valid", 0.0)).reshape(-1)[0])
+    gt_bbox = None
+    if face_valid > 0:
+        gt_bbox = _bbox_center_size_hm_to_img(targets["face_bbox_center"], targets["face_bbox_size"])
+    pred_bbox = out["face_bbox"][0].detach().cpu().numpy().astype(np.float32)
+
+    gt_face_joints = _joints_hm_to_img(np.asarray(targets["joint_img"])[face_idx])
+    gt_face_valid = np.asarray(meta_info["joint_trunc"])[face_idx, 0]
+    pred_joints_hm = out["smplx_joint_proj"][0].detach().cpu().numpy()[face_idx]
+    pred_face_joints = _joints_hm_to_img(pred_joints_hm)
+    pred_face_valid = np.ones((len(face_idx),), dtype=np.float32)
+
+    orig = _label(base.copy(), "orig", cv2)
+
+    gt_panel = base.copy()
+    if gt_bbox is not None:
+        _draw_xyxy(gt_panel, gt_bbox, (0, 255, 255), cv2, 2)
+    _draw_joints(gt_panel, gt_face_joints, gt_face_valid, (0, 255, 0), cv2, 2)
+    _label(gt_panel, "GT face", cv2)
+
+    pred_panel = base.copy()
+    _draw_xyxy(pred_panel, pred_bbox, (255, 255, 0), cv2, 2)
+    _draw_joints(pred_panel, pred_face_joints, pred_face_valid, (0, 0, 255), cv2, 2)
+    _label(pred_panel, "pred face", cv2)
+
+    crop = _crop_rect_from_boxes([gt_bbox, pred_bbox], base.shape)
+    x0, y0, x1, y1 = crop.astype(np.int32)
+    zoom = base[y0:y1, x0:x1].copy()
+    if zoom.size == 0:
+        zoom = base.copy()
+        crop = np.asarray([0, 0, w, h], dtype=np.float32)
+    zoom = cv2.resize(zoom, (w, h), interpolation=cv2.INTER_LINEAR)
+    if gt_bbox is not None:
+        _draw_xyxy(zoom, _transform_xyxy_to_crop(gt_bbox, crop, w, h), (0, 255, 255), cv2, 2)
+    _draw_xyxy(zoom, _transform_xyxy_to_crop(pred_bbox, crop, w, h), (255, 255, 0), cv2, 2)
+    _draw_joints(zoom, _transform_joints_to_crop(gt_face_joints, crop, w, h), gt_face_valid, (0, 255, 0), cv2, 2)
+    _draw_joints(zoom, _transform_joints_to_crop(pred_face_joints, crop, w, h), pred_face_valid, (0, 0, 255), cv2, 2)
+    _label(zoom, "face zoom", cv2)
+
+    panel = np.concatenate([orig, gt_panel, pred_panel, zoom], axis=1)
+    for k in (1, 2, 3):
+        cv2.line(panel, (w * k, 0), (w * k, h), (255, 255, 255), 1)
+    dst = osp.join(out_dir, "epoch%03d_ubody_face.jpg" % epoch)
+    cv2.imwrite(dst, panel)
+    return dst
+
+
 def _save_bedlam_panel(model, db, epoch, out_dir, cv2):
     inputs, targets, meta_info = db[0]
     out = _run_test_forward(model, inputs, targets, meta_info)
@@ -240,7 +394,7 @@ def _save_bedlam_panel(model, db, epoch, out_dir, cv2):
 
 
 def save_epoch_panels(model, trainset_by_name, epoch, out_dir, logger=None):
-    """Save one InterHand + one BEDLAM diagnostic image for this epoch.
+    """Save one diagnostic image per available training source for this epoch.
 
     Never raises: every step is guarded so visualization cannot break training.
     """
@@ -268,6 +422,7 @@ def save_epoch_panels(model, trainset_by_name, epoch, out_dir, logger=None):
         panels = (
             ("InterHand26M", _save_interhand_panel),
             ("BEDLAM", _save_bedlam_panel),
+            ("UBody", _save_ubody_panel),
         )
         for name, fn in panels:
             db = trainset_by_name.get(name)

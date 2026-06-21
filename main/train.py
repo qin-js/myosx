@@ -421,7 +421,7 @@ def main():
             trainer.tot_timer.tic()
             trainer.read_timer.tic()
 
-        # ---- 每 epoch 可视化检查面板 (InterHand 框/crop + BEDLAM mesh) ----
+        # ---- 每 epoch 可视化检查面板 (InterHand/BEDLAM/UBody, if present) ----
         if getattr(cfg, 'vis_epoch_panel', True) and getattr(trainer, 'trainset_by_name', None):
             try:
                 from common.utils.train_vis import save_epoch_panels
