@@ -1,138 +1,51 @@
 # OSX 微调交接摘要
 
-更新时间：2026-06-25
+更新时间：2026-06-26
 
 这个文件只保留重开会话时必须先看的信息。完整项目总览见
-`docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，旧长版交接记录已归档到
+`docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，路线判断见
+`docs/post_stage3_roadmap.md`，旧长版交接记录已归档到
 `docs/archive/continue_2026-06-23_full.txt`。
 
 ## 当前结论
 
-- 手部阶段 `interhand_bedlam_c` 已完成，InterHand-test 全量对等结果为 **OSX normal 19.58mm → `_c` snapshot_8 16.82mm**，手部增益 **-2.76mm / -14%**。
-- 面部阶段 `face_ubody_e` 已完成，EHF Face 回到约 **6.20mm**，但原始 OSX 约 **6.09mm**，所以脸不是有效贡献点。
-- UBody 自然手 2D 评测已接入，当前 `test_sample_interval=10`，`fps=3` 抽帧后样本量足够做快速比较。
-- 最新 UBody 结果显示：微调后模型在自然手 2D 上低于原始 OSX；Stage 2 冻手训脸没有继续改变手，问题应来自更早的手部微调/decoder 路径。
-- UBody `[wa]` per-finger / per-level 诊断已完成（三档：OSX / `face_ubody_e` / `pretrained` 随机-ish 手头参照）。退化模式收敛：**沿指节深度递增、指根不动、tip 最差，整体接近随机-ish 手头的末端优先退化曲线**，我们处在 OSX→`pretrained` 退化区间 72%；该诊断已用于设计 Stage 3。
-- **Stage 3 `joint_polish_f` 已收口，终点定 `snapshot_2`**：InterHand PA **16.76mm**（-14% vs OSX 19.58，目前最好）/ wrist-rel 84.32mm；UBody 整手 `[wa]` NME 0.250→**0.229**（接近 OSX 0.219 但未追平，epoch 2 死平在 0.228-0.229=平台）；EHF Face 6.25mm（微退、噪声级）。Phase 2（epoch 2，lr~5e-7）本质 wash：InterHand 微降、EHF 微退、UBody 不动。已停训不跑 epoch 3。snap1 为"无退化"保守替代，与 snap2 实质等价。
+- `_c snapshot_8` 已建立手部局部能力：InterHand-test 全量 **OSX 19.58mm → 16.82mm**，HInt hand-crop held-out **OSX `[wa]` 0.487 → 0.480**。
+- `face_ubody_e snapshot_4` 冻手训脸，HInt 与 `_c` 完全一致；脸只恢复到 EHF Face 约 6.20mm，未超过 OSX 约 6.09mm。
+- Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`：InterHand **16.76mm**，UBody natural-hand `[wa]` **0.250→0.229**，HInt 仍约 **0.480**，EHF Face 6.25。Stage 3 的真实贡献是修 UBody full-body natural-hand 退化，不是提升 HInt。
+- `coco_pilot` no-gate 稳定但只是轻微 polish：HInt 基本不动，InterHand 约 **16.67-16.69mm**，UBody `[wa]` 约 **0.227-0.228**。MSCOCO hard ROI gate 曾在约 1.3k iter 后导致 loss 整体飙高，暂不采用。
+- 当前手部主问题：**HInt hand-crop 已小幅赢 OSX，但 UBody full-body natural-hand 仍未追平 OSX 0.219**。后续不要只盯 HInt。
 
 ## 当前关键指标
 
-InterHand26M test，全量 52033 hands：
+| 模型 | InterHand PA | HInt `[wa]` NME | UBody `[wa]` NME | 结论 |
+|---|---:|---:|---:|---|
+| OSX normal | 19.58 | 0.487 | 0.219 | 原始 baseline |
+| `_c snapshot_8` | 16.82 | 0.480 | 0.250（由 `face_ubody_e` 冻手等价） | 局部手能力成立，UBody 退化 |
+| `joint_polish_f snapshot_2` | 16.76 | 0.480 | 0.229 | Stage 3 终点，修复 UBody 但未追平 |
+| `coco_pilot snapshot_1/itr3000` | 16.67-16.69 | 0.480-0.481 | 0.227-0.228 | 轻微 polish，HInt 无新增 |
 
-| 模型 | PA-MPJPE | wrist-rel MPJPE | 结论 |
-|---|---:|---:|---|
-| 原始 OSX `normal` | 19.58mm | 86.32mm | 对等 baseline |
-| `_c` snapshot_8 | 16.82mm | 84.58mm | 最佳 PA，手部贡献成立 |
-| `_c` snapshot_10 | 16.82mm | 84.11mm | PA 持平，wrist-rel 略低 |
-| `joint_polish_f` snapshot_0 | 16.85mm | 84.57mm | Stage 3 guardrail 通过 |
-| `joint_polish_f` snapshot_1 | 16.83mm | 84.29mm | 保守替代，无退化 |
-| **`joint_polish_f` snapshot_2** | **16.76mm** | 84.32mm | **Stage 3 终点**，InterHand 最好 |
+## 下一步建议
 
-`wrist-rel` 仍在 84-87mm 高位，说明主要提升来自 PA 对齐后的相对手形/姿态；绝对手腕朝向/全局手系问题没有被这阶段训练彻底解决。后续 Stage 3 必须守住 InterHand PA，不要只看 UBody 自然手。
-
-UBody natural-hand 2D，`output/eval_ubody` / `output/eval_joint_polish_f`：
-
-| 指标 | 原始 OSX | `face_ubody_e` | `joint_polish_f` snap1 | `joint_polish_f` snap2(终点) |
-|---|---:|---:|---:|---:|
-| Evaluated hands | 3446 | 3446 | 3446 | 3446 |
-| `[abs]` PCK@0.2 | 0.422 | 0.383 | 0.406 | 0.406 |
-| `[abs]` NME | 0.311 | 0.337 | 0.324 | 0.324 |
-| `[wa]` PCK@0.2 | 0.587 | 0.515 | 0.560 | 0.560 |
-| `[wa]` NME | 0.219 | 0.250 | 0.229 | 0.229 |
-| PA MPVPE Hands | 10.29mm | 10.28mm | 10.16mm | 10.11mm |
-
-伪 GT PA-MPJPE 仍不能反映自然手质量；判断自然手以真实 2D hand keypoint 的 `[abs]` / `[wa]` 为主。Stage 3 验证了 UBody 自然手监督 + predicted ROI + mixed data 这个组合配方有效，但还没有单独隔离“GT 框注入/crop 分布差”这一单因子。
-
-这里的“原始 OSX”来自 `output/eval_ubody/result/UBody_result.txt`：top-level eval 使用
-`--decoder_setting normal` 且没有 `--continue_train_path`；snapshot 子目录使用 `pytorch` 两步加载
-`face_ubody_e` checkpoint。当前 per-finger 结果目录里有 snapshot_0/4；snapshot_8 由冻结手权重等价推断。`result/pretrained/` 是 pytorch 映射预训练分支，保留未覆盖随机-ish 手头，用作退化参照而非严格下界。
-
-per-level `[wa]` NME（退化沿指节深度递增，Stage 3 主要回收 j3/tip）：
-
-| level | OSX | `face_ubody_e` | `joint_polish_f` snap1 | `pretrained` | snap1-OSX |
-|---|---:|---:|---:|---:|---:|
-| j1 指根 | 0.205 | 0.208 | 0.206 | 0.207 | +0.001 |
-| j2 | 0.221 | 0.236 | 0.225 | 0.241 | +0.004 |
-| j3 | 0.231 | 0.270 | 0.242 | 0.286 | +0.011 |
-| tip 指尖 | 0.263 | 0.337 | 0.287 | 0.367 | +0.024 |
-
-tip/j1 放大比：OSX 1.28 → `face_ubody_e` 1.62 → `joint_polish_f` snapshot_1 1.39 → `pretrained` 1.77。结论：退化主要是整体末端能力下降，Stage 3 已把末端斜率显著拉回，但仍略差于原始 OSX。
-
-注意：已核对 `smpl_x.orig_hand_regressor` 与 UBody GT 手关键点顺序，二者都是
-`wrist, thumb, index, middle, ring, pinky`。不要用 `human_models.py` 里的旧
-`orig_joints_name` 解码 `J_regressor` 行号，它对 SMPL-X 22+ 行有误导。
-
-## 已实现：UBody `[wa]` Per-Finger 诊断
-
-`data/UBody/UBody.py` 的 `evaluate()` / `print_eval_result()` 已新增 `[wa-finger]`（thumb/index/middle/ring/pinky）和 `[wa-level]`（j1/j2/j3/tip）NME + 有效计数 N。wrist 只对齐一次，归一化用整手 GT bbox diagonal，`vf.sum()>=2` 才统计；并加了 UBody hand order 显式校验。
-
-**判读口径（下次看 per-finger 结果必读）**：per-finger/per-level 是各自可见子集上的均值，每组进入统计的手不同，**不要用五指 NME 简单平均去对账整手 `[wa]` NME**；横向比手指也要同时看 `N`（tip/j1 的 N 会因指尖常遮挡而明显小于指根，属预期）。最适合看同一根手指/同一 level 的 OSX vs 我们 delta。
-
-## 下一步：身体 shape 小实验 T1（Stage 3 已收口）
-
-Stage 3 `joint_polish_f` 已结束，终点 `snapshot_2`（决策与三件套对照见 `docs/experiment_log.md` 2026-06-25）。结论：手部基准稳固（InterHand 16.76 / -14%），自然手回收到 `[wa]` 0.229（接近 OSX 0.219、未追平、已到平台），身体/脸平价。**不再继续 Stage 3 训练**（epoch 2 确认平台、规则 3 的 `[wa]≤0.225` 远未达到）。
-
-下一步是 **`body_shape_t1`**（代码已实现，默认关闭、对手/脸零影响）：只解冻 `body_regressor.shape_out`+`cam_out`、BEDLAM-only shape 监督，修体型 betas mean-reversion。完整配方 / 启动命令 / 影响分析见 `docs/experiment_log.md` 2026-06-25 的 T1 条目。启动前置：`config.py` 改 `trainset_3d=['BEDLAM'], trainset_2d=[]`，填 `--init_trained_path`（用 `joint_polish_f/snapshot_2`）。等 GPU 空闲再起。
-
-**Stage 3 历史配方（已完成，留档）**：暖启 `face_ubody_e snapshot_4`（`--init_trained_path` 新开 run），lr 5e-5 / `posnet_lr_mult=0.5` / `phase1_epochs=2` / `end_epoch=4`；`trainset_3d=['BEDLAM','InterHand26M','UBody']`（prob 0.20/0.35/0.45）；UBody 用 box_net 预测框、开 `--ubody_use_hand_roi_quality`；`--bedlam_no_hand_img_loss --bedlam_use_hand_roi_quality`。
-
-**已废弃的 Stage 3 决策规则**（平台已确认，留作记录）：曾约定「`[wa]` 仍 0.228-0.229 则停训、在 snap1/2 选终点」「`[wa]≤0.225` 才再加 epoch」——实际 epoch 2 死平在 0.228-0.229，已据此停训并选 snapshot_2。
-
-## UBody Annotation Cache
-
-推荐使用按抽帧图片过滤后的 pkl：
-
-```bash
-cd /workspace/myosx
-python tool/UBody/filter_annotations_by_images.py \
-  --data_root dataset/UBody \
-  --output_root dataset/UBody/annotations_filtered \
-  --pkl_only \
-  --overwrite
-export UBODY_ANNOTATION_DIR=dataset/UBody/annotations_filtered
-```
-
-当前已确认：
-
-- `dataset/UBody/annotations_filtered` 下 15 个 scene 的 pkl 都带 `_ubody_orig_ann_order`。
-- Movie train 路径：原始 JSON 与 filtered pkl datalist 逐样本一致。
-- Olympic test 路径：原始 JSON 与 filtered pkl datalist 逐样本一致。
-
-如果重新抽帧、改 images、改原始 annotation，必须重跑上面的 filter cache。
-
-## 常用训练命令
-
-Stage 3 联合 polish（修末端自然手泛化；先短跑 2-4 epoch，别直接 12）。与 `main/train.sh` 活动命令一致：
-
-```bash
-cd /workspace/myosx/main
-export UBODY_ANNOTATION_DIR=/workspace/myosx/dataset/UBody/annotations_filtered
-python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
-  --train_batch_size 64 --num_thread 8 --end_epoch 4 --phase1_epochs 2 \
-  --exp_name output/joint_polish_f --decoder_setting pytorch --encoder_setting osx_l --grad_clip 1.0 \
-  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-  --init_trained_path ../output/face_ubody_e/model_dump/snapshot_4.pth.tar \
-  --train_face_modules --posnet_lr_mult 0.5 \
-  --bedlam_use_hand_roi_quality --bedlam_no_hand_img_loss \
-  --ubody_use_hand_roi_quality --save_iters 1280
-```
-
-`--save_iters 1280`（新增，可选）：每 ~1/3 epoch 在中途存 `snapshot_{epoch}_itr1280/2560.pth.tar` 作为评估候选点，与 epoch 末快照分开命名、互不覆盖（每个 ~399M）。中途快照定位为评估点，续训仍以 epoch 为粒度。`0`/不传＝关闭。
-
-前置（必须改 `config.py`，CLI 不覆盖数据集选择）：`trainset_3d=['BEDLAM','InterHand26M','UBody']` 且 `trainset_3d_sample_prob={'BEDLAM':0.20,'InterHand26M':0.35,'UBody':0.45}`（不补 UBody 概率会报 Missing sample probabilities）。UBody ROI gate 阈值走 `config.py` 默认 0.6/8（诊断起点）；正式跑前先 `--end_epoch 1` 短跑看 `[ubody] hand_roi_gate_coverage/pass/n_valid` 校准，再按需改 config.py。Stage 3 前确认 UBody 用 box_net 预测框、不注入 GT 框。
+1. 不再继续同配方 COCO pilot 长训；no-gate 结果可作为 polish checkpoint，但不是主突破。
+2. 不要直接开启 `--mscoco_use_hand_roi_quality`；当前 hard gate 在 MSCOCO 上 pass 率低且已证实不稳。若再试，只能改 soft weighting 或低阈值短跑。
+3. 若继续手部主线，优先小心版路线 C：解冻 `hand_roi_net`，与 hand decoder/regressor 小 LR 共适应；先不动 `box_net`，主判据看 UBody natural-hand，HInt/InterHand 只做 guardrail。
+4. 身体 shape T1 是独立附带线：代码已实现，默认关闭；目标是 `body_regressor.shape_out` + `cam_out` 修 betas mean-reversion，详见 `experiment_log.md` 2026-06-25。
 
 ## 常用评估命令
 
-原始 OSX UBody：
+HInt：
 
 ```bash
 cd /workspace/myosx/main
-python test.py --gpu 0 --testset UBody --exp_name output/eval_ubody \
-  --decoder_setting normal --encoder_setting osx_l \
-  --pretrained_model_path ../pretrained_models/osx_l.pth.tar
+python test.py --gpu 0 --testset HInt --exp_name output/eval_hint \
+  --decoder_setting pytorch --encoder_setting osx_l \
+  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar \
+  --hint_root /workspace/HInt_annotation_partial \
+  --hint_split test --hint_sources epick,newdays
 ```
 
-Stage 3 snapshot UBody：
+UBody natural-hand：
 
 ```bash
 cd /workspace/myosx/main
@@ -140,10 +53,10 @@ export UBODY_ANNOTATION_DIR=/workspace/myosx/dataset/UBody/annotations_filtered
 python test.py --gpu 0 --testset UBody --exp_name output/eval_joint_polish_f \
   --decoder_setting pytorch --encoder_setting osx_l \
   --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_1.pth.tar
+  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar
 ```
 
-Stage 3 snapshot InterHand 全量：
+InterHand 全量：
 
 ```bash
 cd /workspace/myosx/main
@@ -152,14 +65,12 @@ python test.py --gpu 0 --testset InterHand26M \
   --interhand_eval_split test --max_eval_iters -1 \
   --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
   --exp_name output/eval_joint_polish_f \
-  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_1.pth.tar
+  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar
 ```
 
 ## 文档入口
 
-- `docs/post_stage3_roadmap.md`：**Stage 3 之后的路线与决策（in-the-wild hand 主线）**——候选路线、当前选择（加 COCO-WholeBody）、概率评估、pilot 与决策门。前瞻性主文档，下一步先看它。
-- `docs/project_overview.md`：当前项目状态、关键结论、推荐下一步。
-- `docs/experiment_log.md`：按时间追加的实验日志。
+- `docs/project_overview.md`：当前项目状态、关键结果、推荐下一步。
+- `docs/experiment_log.md`：按时间追加的实验日志；2026-06-26 记录 HInt 全链补测和 COCO pilot 复盘。
+- `docs/post_stage3_roadmap.md`：路线判断；HInt/UBody 口径修正、COCO pilot 复盘、路线 C 条件。
 - `docs/archive/continue_2026-06-23_full.txt`：旧长版交接记录，保留历史细节。
-- `docs/interhand_bedlam_training_plan.md`：早期训练计划。
-- `docs/bedlam_smplx_compatibility.md`、`docs/bedlam_problems.txt`：BEDLAM 兼容与问题记录。

@@ -2,6 +2,39 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-06-26
+
+### HInt 全链补测：HInt win 起点在 `_c snapshot_8`，COCO pilot 对 HInt 无新增收益
+
+补齐 HInt hand-crop held-out 评测链，结果目录：
+
+- `_c snapshot_8`、`face_ubody_e snapshot_4`、`joint_polish_f snapshot_0/1`：`output/eval_hint/result/`
+- `joint_polish_f snapshot_2`：`output/eval_joint_polish_f/result/snapshot_2/HInt_result.txt`
+- OSX baseline 与 `coco_pilot`：`output/eval_coco_pilot/result/`
+
+HInt 有效样本均为 3656 hands，且左右手标签均已从文件名 `_l/_r` 解析成功（`Known side labels used: 3656 / 3656`）。
+
+| 模型 | abs PCK@0.2 | abs NME | wa PCK@0.2 | wa NME |
+|---|---:|---:|---:|---:|
+| OSX baseline | 0.132 | 0.451 | 0.121 | 0.487 |
+| `_c snapshot_8` | **0.140** | **0.436** | **0.125** | **0.480** |
+| `face_ubody_e snapshot_4` | **0.140** | **0.436** | **0.125** | **0.480** |
+| `joint_polish_f snapshot_0` | 0.139 | 0.436 | 0.125 | 0.481 |
+| `joint_polish_f snapshot_1` | 0.139 | 0.436 | 0.125 | 0.481 |
+| `joint_polish_f snapshot_2` | 0.139 | 0.436 | 0.125 | 0.480 |
+| `coco_pilot snapshot_1` | 0.139 | 0.436 | 0.125 | 0.481 |
+| `coco_pilot snapshot_1_itr3000` | 0.139 | 0.435 | 0.125 | 0.480 |
+
+**判读**：
+
+- HInt 相对 OSX 的小幅胜利在 `_c snapshot_8` 已经出现：`abs NME 0.451→0.436`，`wa NME 0.487→0.480`。
+- `face_ubody_e` 冻手训脸，HInt 与 `_c` 完全一致，符合预期。
+- Stage 3 `joint_polish_f` 大幅修复 UBody natural-hand（`0.250→0.229`），但 HInt 基本不动；说明 HInt 当前 hand-crop 评测口径不敏感于 Stage 3 修复的 full-body natural-hand pipeline 问题。
+- `coco_pilot` 对 HInt 基本无新增收益；它的边际收益只体现在 InterHand 微降（约 `16.76→16.67/16.68`）与 UBody `[wa]` 微降（`0.229→0.227`）。
+- 之前尝试开启 `--mscoco_use_hand_roi_quality` 后训练 loss 在约 1.3k iter 后整体飙高；日志显示 MSCOCO gate pass 率常仅 `0.12-0.37`，且 InterHand/UBody 也被带坏。当前稳定 `coco_pilot` 结果来自 **MSCOCO hard gate 关闭** 的配方。
+
+**结论修正**：Stage 3 不能再概括为“手只会 InterHand、不泛化”。更准确是：`_c` 起已经在 HInt hand-crop held-out 上小幅超过 OSX，Stage 3 的真实贡献是修复 UBody full-body natural-hand 退化；但 UBody 仍未追平 OSX。后续若继续手部主线，主判据应转向 UBody/full-body natural-hand pipeline，HInt 作为 local hand-crop held-out guardrail。
+
 ## 2026-06-25
 
 ### Stage 3 `joint_polish_f` 收口：epoch 2 平台确认，终点定 snapshot_2

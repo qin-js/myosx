@@ -1,6 +1,6 @@
 # Stage 3 之后的路线与决策（in-the-wild hand 主线）
 
-更新时间：2026-06-25
+更新时间：2026-06-26
 
 本文件是**前瞻性路线/决策文档**，承接 Stage 3 收口之后的方向选择。
 - 按时间的结果记录见 `docs/experiment_log.md`；当前状态快照见 `docs/project_overview.md`。
@@ -14,16 +14,35 @@ Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`。把结果放到审稿
 
 | 部分 | 现状 | 性质 |
 |---|---|---|
-| 手 InterHand PA | 19.58→**16.76**（-14%）✅ | 唯一量化亮点，但属 **in-domain 特化**（在 InterHand 上重训得比 OSX 狠）|
+| 手 InterHand PA | 19.58→**16.76**（-14%）✅ | 主要量化亮点，属 **in-domain 特化**（在 InterHand 上重训得比 OSX 狠）|
+| 手 HInt hand-crop | 0.487→**0.480**(`[wa]` NME) ✅ | held-out hand-interaction 小幅赢 OSX，但 `_c snapshot_8` 起已达成 |
 | 手 wrist-rel | 84-86mm，没动 ❌ | 绝对手系/全局朝向未解决 |
-| 手 自然图(UBody `[wa]`) | 0.219→**0.229，仍差于 OSX** ❌ | **手的提升不泛化、野外反退** = 当前最大硬伤 |
+| 手 自然图(UBody `[wa]`) | 0.219→**0.229，仍差于 OSX** ❌ | full-body natural-hand pipeline 仍是当前最大硬伤 |
 | 脸 EHF Face | 6.09→6.25，略差 ❌ | 无贡献 |
 | 身体 | 冻结=与 OSX 相同 | 结构上动不了 |
 
-**核心矛盾**：唯一的量化亮点（InterHand -14%）伴随一个会被直接攻击的弱点——**手不泛化、野外还退了**。任何"我们手更好"的论文，只要 in-the-wild 比 baseline 差，基本会被拒。
+**核心矛盾（2026-06-26 修正）**：手部并非“完全不泛化”。`_c snapshot_8` 起已经在 HInt hand-crop held-out 上小幅超过 OSX，但 UBody full-body natural-hand 仍低于 OSX。也就是说，局部手能力成立，完整自然图里的 ROI/上下文/小手 pipeline 仍没追平。
 
 **因此下一阶段的目标**（也是论文成败点）：
-> **把手的胜利从 in-domain 搬到 in-the-wild——在 InterHand 不退（≤~16.8）的同时，野外手（held-out）超过 OSX。** 两者都要，才是论文。
+> **把手的胜利从 hand-crop/local-hand 搬到 full-body natural-hand pipeline——在 InterHand 不退（≤~16.8）、HInt 不退的同时，让 UBody natural-hand 追平/超过 OSX。**
+
+### 0.1 HInt 补测后的口径修正
+
+HInt 全链补测见 `docs/experiment_log.md` 2026-06-26。关键发现：
+
+| 模型 | HInt abs NME | HInt `[wa]` NME |
+|---|---:|---:|
+| OSX baseline | 0.451 | 0.487 |
+| `_c snapshot_8` | 0.436 | 0.480 |
+| `face_ubody_e snapshot_4` | 0.436 | 0.480 |
+| `joint_polish_f snapshot_2` | 0.436 | 0.480 |
+| `coco_pilot snapshot_1_itr3000` | 0.435 | 0.480 |
+
+判读：
+- HInt win 在 `_c snapshot_8` 已出现，后续 Stage 3 / COCO pilot 基本不再改变。
+- HInt 当前 loader 是 hand-only crop 口径，更接近 InterHand；它能证明 local hand-crop 能力有 held-out 泛化，但不能单独代表完整 OSX full-body 场景。
+- Stage 3 的主要贡献是 UBody natural-hand `0.250→0.229`，HInt 对这件事不敏感。
+- 因此 HInt 从“唯一主判据”降级为 **local hand-crop held-out guardrail**；full-body natural-hand 主判据应看 UBody `[wa]/[abs]` 与 demo。
 
 ---
 
@@ -32,8 +51,8 @@ Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`。把结果放到审稿
 | 路线 | 机制 | 价值 | 风险/代价 | 判定 |
 |---|---|---|---|---|
 | **A. 冻结框架内调参/换 decoder** | LR/schedule/解码器结构 | 仅 in-domain 边际 | 低 | ❌ 不做：已平台，且碰不到 wrist-rel / 泛化 |
-| **B. 加 COCO-WholeBody 真实 2D（冻结）** | 补野外真实 2D 手监督 | 修野外泛化、最便宜的判定实验 | 低 | ✅ **当前选择（第一步）** |
-| **C. 解冻 `hand_roi_net`（+decoder 共适应）** | 给容量、制造超过 OSX 的 headroom | 高（参数高效、不碰 encoder/body）| 中 | 🔶 条件性下一步（B 若只持平则必上）|
+| **B. 加 COCO-WholeBody 真实 2D（冻结）** | 补野外真实 2D 手监督 | 轻微 polish；HInt 无新增，UBody/InterHand 小幅改善 | 低到中（hard MSCOCO gate 已证实不稳） | 🔶 已跑 pilot：不建议同配方长训 |
+| **C. 解冻 `hand_roi_net`（+decoder 共适应）** | 给 full-body natural-hand pipeline 新容量 | 针对 UBody 仍输 OSX 的真实瓶颈 | 中 | ✅ 当前更有价值的下一步候选 |
 | **D. wrist-rel 架构改动（手腕全局朝向 DOF）** | 给手分支补全局朝向自由度 | 最 novel | 高、不确定（2D 朝向歧义是全领域硬上限）| 🔻 stretch goal，非主线 |
 | **E. 身体 shape T1（已实现）** | 解冻 `body_regressor.shape_out`+`cam_out` | 次要/配图 | 低 | ⚪ 附带结果，不当论文主线 |
 | **F. 兜底** | 转 workshop/技术报告，或承认到顶 | — | — | 决策门触发时启用 |
@@ -42,103 +61,70 @@ Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`。把结果放到审稿
 
 ---
 
-## 2. 当前选择：路线 B（加 COCO-WholeBody），以及为什么
+## 2. 路线 B 复盘：COCO pilot 是轻微 polish，不是 HInt 突破
 
-### 为什么先选 B
-1. **数据现成**：`data/MSCOCO/MSCOCO.py` 已读 `coco_wholebody_train_v1.0.json`，带 `lefthand_kpts/righthand_kpts`（line 75/102-103）。接进训练成本低。
-2. **直接对症当前硬伤**：野外手退化。COCO-WholeBody 是**野外真实 2D 手**，整身、能直接接 SMPL-X 手关节投影 loss。
-3. **最便宜的判定实验**：它能直接测出我们处在"数据受限"还是"特征受限"（见 §2.3），决定后续是否加码。
+### 已跑配方
 
-### 必须认清的前提（决定概率）
-- **OSX 上游训练时就用了 COCO-WholeBody 含手 2D**。它的 UBody `[wa]` 0.219 正是用这份数据、且 **backbone 可训** 练出来的。→ 我们是**冻结 backbone、在 OSX 用过的数据上追/超它**，而那个被冻住的 backbone 恰是 OSX 用这数据调出来的。
-- **UBody 训练本来就用了真实 2D 手关键点**（`UBody.py:179-184`）。→ COCO 对我们是**"同一种监督、更大更多样"**（COCO ~10万+多样图 vs UBody 15 个视频场景），**不是新信号**。
+- 暖启 `joint_polish_f/snapshot_2`。
+- 加权三源：`InterHand26M=0.35 / UBody=0.25 / MSCOCO=0.40`，砍掉 BEDLAM。
+- 冻结 backbone/body/box/ROI，只训练 hand/face position、decoder、regressor。
+- 稳定版本只开 `--ubody_use_hand_roi_quality`；**未开 MSCOCO hard gate**。
 
-### 2.3 核心未知：0.229 平台是"数据受限"还是"特征受限"
-| 读法 | 含义 | 指向 |
-|---|---|---|
-| (a) 数据受限 | UBody 太窄才停在 0.229，COCO 多样性能打破 | 能超过 OSX |
-| (b) 特征受限 | 冻结特征+只训头，渐近线≈0.219（OSX 把 backbone 调到这了）| 只到追平 |
+### 结果复盘
 
-证据：Stage 3 **带着自然 2D 数据**（UBody）仍平在 0.229、多 epoch 不往 0.219 漂 → **略偏 (b)**；但 UBody 太窄是混淆项，COCO 可能打破。**先验无法断定，pilot 直接测。**
+| 指标 | Stage3 snap2 | COCO pilot | 判读 |
+|---|---:|---:|---|
+| HInt `[wa]` NME | 0.480 | 0.480-0.481 | 无新增 |
+| HInt abs NME | 0.436 | 0.435-0.436 | 无实质新增 |
+| UBody `[wa]` NME | 0.229 | 0.227-0.228 | 小幅 polish |
+| InterHand PA | 16.76mm | 16.67-16.69mm | 小幅 polish |
+| EHF Face | 6.25mm | 约 6.12-6.21mm | 波动内回收 |
 
-### 2.4 概率评估（冻结 + 加 COCO）
-| 结果 | 概率 |
-|---|---|
-| 追平 OSX（~0.219±噪声）| ~65-75% |
-| 名义超过（`[wa]`<0.219 任意幅度）| ~35-45% |
-| **可发表的稳超**（HInt held-out 有清晰 margin）| ~25-35% |
+结论：
+- COCO pilot 没有推动 HInt，因为 HInt 的胜利早在 `_c snapshot_8` 就存在。
+- COCO 对 UBody/InterHand 有轻微正向，但幅度太小，不足以构成主突破。
+- 当前 no-gate COCO 结果可作为一个较稳的 polish checkpoint；不建议继续同配方长训。
 
-"名义超过"接近掷硬币，但**可发表的稳超仍 <50%**，因为：① 带自然数据已平在 0.229；② 冻结渐近线≈OSX 水平；③ 降一丢丢是噪声、审稿人不认。
+### MSCOCO hard gate 复盘
 
-### 2.5 Pareto 张力（容易忽略的制约）
-要把自然手压过 OSX，最有效杠杆是**重配比**（加大自然数据权重、降 InterHand 主导），但这很可能**反噬 InterHand PA**（-14% 头条）。论文要**两个都赢**，而 in-domain 与 in-the-wild 常在 Pareto 前沿互斥——**这才是真正难的部分**。
+曾尝试 `--mscoco_use_hand_roi_quality`，日志显示：
+- MSCOCO gate pass 常仅 `0.12-0.37`，`n_valid` 经常只有 `2-8`。
+- 初期 loss 正常，约 1.3k iter 后 `joint_proj / joint_img / smplx_joint_img` 整体飙高。
+- 飙高不只发生在 MSCOCO，InterHand/UBody 也被共享 hand head 带坏。
+
+判读：当前 hard gate 用冻结 box/ROI 结果做二值筛选，但 box/ROI 本身不更新；在 MSCOCO 上它主要是在大量删除手部 2D 监督，导致梯度分布变尖和训练动态失稳。**不要再直接开启 hard MSCOCO gate。**
+
+若未来还想利用 MSCOCO ROI 质量，必须改成小实验：
+- soft weighting，而非整只手二值置零；
+- 或 MSCOCO 专属低阈值（如 coverage 0.2-0.3 / min_joints 4）短跑验证；
+- 或等路线 C 解冻 ROI 后再重新评估 gate。
 
 ---
 
-## 3. 路线 B 执行计划（pilot + 决策门）
+## 3. 后续手部主线：优先修 full-body natural-hand pipeline
 
-### Pilot 配方
-- 暖启 `joint_polish_f/snapshot_2`（现成好手头当初始化）。
-- 把 **MSCOCO（coco_wholebody）加进 `trainset_2d`**，调配比（自然 2D 占比上来、InterHand 别过载）。
-- **先保持冻结 backbone**（只动手头/decoder），短跑。
-- 保留手部既有保护项（ROI gate 等）。
+当前真正没过的指标是 UBody full-body natural-hand：`[wa]` 仍为 0.227-0.229，高于 OSX 0.219；HInt hand-crop 已经平台，不能再作为区分路线的主指标。
 
-### 测量陷阱（必读）⚠️
-训 COCO-WholeBody 后再用 UBody 评 = **部分 in-distribution、数字偏乐观**。**可发表结论必须在训练没见过的 held-out 野外基准（HInt）上评**，否则审稿人直接打折。UBody 只作参考、看趋势。
+建议的执行顺序：
 
-### 决策门
-1. 若 HInt/UBody `[wa]` **明显往 0.219 以下走** → 判定 **(a) 数据受限** → 加码：叠 **路线 C（解冻 hand_roi_net）** 冲更低。
-2. 若**卡在 ~0.219 不动** → 判定 **(b) 特征受限** → 冻结路线到顶，要么上路线 C 给容量，要么转 §6 兜底。
-3. 全程盯 **InterHand guardrail**（≤~16.8）看 Pareto 代价；EHF Face 看脸 guardrail。
+1. **停止同配方 COCO 长训**：HInt 无新增，UBody/InterHand 只微动。
+2. **以 UBody natural-hand 为主判据**：看 `[wa]`、`[abs]`、per-level tip/j3；HInt 只看是否退化。
+3. **进入小心版路线 C**：解冻 `hand_roi_net`，并与 hand decoder/regressor 小 LR 共适应；先不动 `box_net`，不用 hard MSCOCO gate。
+4. **若 C 仍不动 UBody**：再考虑更高风险的 `box_net` 或 wrist/global pose 架构改动；否则及时转向。
 
-### 实现成本
-- MSCOCO loader 现成；主要是把它加进 `config.py` 的加权 `trainset_3d`、设采样配比、校验 hand kpt 顺序/valid 与现有 joint_set 一致。
-- 中等偏低工作量。
-
-### 准备状态（2026-06-25）
-**代码侧已就绪**：
-- ✅ `data/MSCOCO/MSCOCO.py` train 分支 meta_info 已补齐 fork 的 6 个键（`bb2img_trans / dataset_id=3 / is_interhand=False / is_bedlam=False / is_ubody=False / is_hand_only=False`），与 BEDLAM/UBody/InterHand 的 17 键 schema **完全对齐**（否则 mixed-batch `default_collate` 会崩）。targets 键、joint_num=134 本就一致。
-- 改动安全：MSCOCO 不在 trainset 时**零影响**。
-
-**数据侧是 blocker（需你获取，我下不了）**：
-- `dataset/MSCOCO/images/`（COCO2017 train images, ~19GB）
-- `dataset/MSCOCO/annotations/coco_wholebody_train_v1.0.json`（COCO-WholeBody 真实 2D，含手）
-- `dataset/MSCOCO/annotations/MSCOCO_train_SMPLX.json`（OSX/Hand4Whole 出的伪 GT SMPL-X 拟合）
-- loader 路径优先 `dataset/MSCOCO/{images,annotations}`，否则回退 `dataset/coco/`。`cfg.data_dir = <root>/dataset`。
-- 评测 held-out 的 **HInt**（HaMeR）也需另外获取（eval 时用）。
-
-**config 改法（pilot 启动时）**：`main/config.py` 改为**三源加权（砍掉 BEDLAM）**——把 MSCOCO 放进加权 3d 组而非 trainset_2d，避免 `make_same_len=True` 强制的 50/50（那会把 InterHand 腰斩到 17.5%）：
-```python
-trainset_3d = ['InterHand26M', 'UBody', 'MSCOCO']
-trainset_2d = []
-trainset_3d_sample_prob = {'InterHand26M': 0.35, 'UBody': 0.25, 'MSCOCO': 0.40}
-```
-- **比例理由**：InterHand 0.35 维持原值当 guardrail 锚（实验干净 + 加 MSCOCO 后绝对曝光反升）；MSCOCO 0.40 当被测主力（保证统计功效）；UBody 0.25 保域连续性；**砍 BEDLAM**（冻结 backbone 下身体 loss 不训练、`--bedlam_no_hand_img_loss` 又切了手 2D、只剩合成手姿态，价值最低）。唯一代价：3D 手监督只剩 InterHand（lab），略增 in-domain 拉力，但合成手姿态本就帮不上自然手，可接受。
-- **比例是起点不是定值**：跑起来按前 ~1280 itr 调——PA 稳就更激进（`IH 0.30 / MSCOCO 0.40+`）；PA 在 IH 0.35 下仍掉则说明 MSCOCO 在干扰手姿态，需降 MSCOCO/加 IH。
-- 机制：从 `trainset_3d` 和 `trainset_3d_sample_prob` **同时删掉 `'BEDLAM'`**。`itr/epoch ≈ (len_IH+len_UB+len_MSCOCO)/64`，每源曝光 = `itr × prob`。
-
-**启动命令（数据就位后）**：暖启 snapshot_2、冻结 backbone：
-```bash
-cd /workspace/myosx/main
-export UBODY_ANNOTATION_DIR=/workspace/myosx/dataset/UBody/annotations_filtered
-python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
-  --train_batch_size 64 --num_thread 8 --end_epoch 4 --phase1_epochs 2 --save_iters 1280 \
-  --exp_name output/coco_pilot --decoder_setting pytorch --encoder_setting osx_l --grad_clip 1.0 \
-  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-  --init_trained_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar \
-  --train_face_modules --posnet_lr_mult 0.5 --ubody_use_hand_roi_quality
-```
-（BEDLAM 已砍，`--bedlam_*` flags 已移除。`--save_iters 1280` 便于早停判定。）
-
-**启动后自检**：日志应出现 MSCOCO 被加载、batch 里有 MSCOCO 样本、`✅ 梯度流正常`、无 collate 报错；早期看 UBody/InterHand 趋势。
+推荐 guardrail：
+- InterHand PA：维持 ≤~16.8，最多不破 17.0。
+- HInt hand-crop：不低于 Stage3 水平（`wa` NME ~0.480）。
+- EHF Face：约 6.2 附近，避免脸明显回退。
+- UBody：主目标是 `[wa]` 从 0.227-0.229 往 0.219 靠，且 `[abs]` 不恶化。
 
 ---
 
 ## 4. 路线 C：解冻 `hand_roi_net`（条件性下一步）
 
-**何时上**：路线 B 只到追平、判定为特征受限时；或想主动制造超过 OSX 的 headroom 时。
+**何时上**：当前即可作为下一步候选。理由不是“B 没让 HInt 超 OSX”（HInt 早已小幅超），而是 **UBody full-body natural-hand 仍差于 OSX，且冻结 head/decoder 继续训练已平台**。
 
-**机制**：给模型新容量，在同一份数据上抽出比 OSX 冻结手头更好的自然手特征。**参数高效**（不碰 encoder/body）。
+**机制**：给 full-body natural-hand pipeline 新容量，让 hand ROI 特征与 decoder/regressor 共适应。**参数高效**（先不碰 encoder/body/box）。
 
 **关键约束（重要）**：
 - **decoder 不从头训**——用现在的当初始化、**和 ROI 一起小 LR 共适应**。
@@ -146,7 +132,7 @@ python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
 - **先 `hand_roi_net`、后 `box_net`**：`hand_roi_net`（crop+upsample）是渐进扰动；`box_net`（挪动 crop 位置）扰动剧烈，destabilize 风险大，分阶段。
 - 机制上是**模块级**改动（把 `hand_roi_net` 移出 `frozen_modules`、加进 `trainable_module_names`），比 body T1 的子模块白名单还简单；两步加载仍成立。
 
-**风险**：ROI 漂移把 decoder 输入带飘、冲掉 InterHand → 靠小 LR + 联合训练 + InterHand guardrail 控。
+**风险**：ROI 特征分布一动，把 decoder 输入带飘、冲掉 InterHand/HInt → 靠小 LR + 联合训练 + InterHand/HInt guardrail 控。主判据看 UBody，而不是 HInt。
 
 ---
 
@@ -167,9 +153,9 @@ python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
 
 ## 6. 兜底（决策门触发时）
 
-- 若 B（持平）+ C（仍只持平）都推不动 → OSX 在这个冻结家族已到天花板，"野外手超 OSX"不是可行卖点 → **及时转向**。
+- 若 C（以及可选的 soft ROI weighting / 低风险 COCO 变体）仍推不动 UBody → OSX 在这个冻结家族的 full-body natural-hand pipeline 已接近天花板，"完整自然图手超 OSX"不是可行卖点 → **及时转向**。
 - 退路：① 现有 InterHand 特化结果做 **workshop/技术报告**（in-domain 贡献 + 诚实的泛化分析）；② 把重心移到别的可量化角度。
-- 决策点很清晰：**能不能拿到一个干净的、held-out 上"in-the-wild 手 > OSX"的数字，同时 InterHand 不退。**
+- 决策点很清晰：**能不能在 UBody/full-body natural-hand 上追平或超过 OSX，同时 InterHand 与 HInt hand-crop 不退。**
 
 ---
 
@@ -177,9 +163,9 @@ python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
 
 | 基准 | 角色 |
 |---|---|
-| **HInt**（held-out 野外手 2D）| **主判据**：声称"野外手 > OSX" 必须在此 |
+| **UBody natural-hand `[wa]/[abs]`** | full-body natural-hand 主判据；当前唯一仍稳定低于 OSX 的手部口径 |
+| **HInt**（held-out hand-crop 2D）| local hand-crop held-out guardrail；证明非纯 InterHand 过拟合，但不单独代表 full-body pipeline |
 | InterHand26M test（全量）| in-domain guardrail（≤~16.8，盯 Pareto 代价）|
-| UBody natural-hand `[wa]/[abs]` | 参考/趋势（训 COCO 后部分 in-distribution，不单独定论）|
 | EHF Face | 脸 guardrail（~6.2）|
 | demo 重渲染 | 定性配图 |
 
@@ -187,4 +173,4 @@ python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
 
 ## 8. 一句话总结
 
-Stage 3 拿到了**手部基准的硬胜（InterHand -14%）**，但泛化是硬伤。下一阶段唯一高价值的主线是**把这个胜利搬到野外**：**先加 COCO-WholeBody（路线 B）跑 pilot，用 HInt held-out 测"数据受限 vs 特征受限"** → 数据受限就叠**解冻 hand_roi_net（路线 C）**冲过 OSX。wrist-rel（D）需架构改动、是高风险 stretch；身体 shape（E）是附带配图；都不当主线。**可发表的稳超 OSX 概率约 25-35%，且必须不掉 InterHand——值得用低成本 pilot 赌一把，但要设清楚转向门。**
+Stage 3 拿到了**手部基准硬胜（InterHand -14%）**，并且 `_c` 起已经在 **HInt hand-crop held-out** 上小幅超过 OSX；真正没过的是 **UBody full-body natural-hand**。COCO pilot no-gate 只带来轻微 polish，hard MSCOCO gate 不稳。下一阶段若继续手部主线，应把 HInt 作为 guardrail，把 UBody natural-hand 作为主判据，优先试小心版 **路线 C：解冻 `hand_roi_net` + decoder/regressor 共适应**；wrist-rel 架构改动仍是高风险 stretch，身体 shape T1 是独立附带线。

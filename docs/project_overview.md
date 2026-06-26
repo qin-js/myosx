@@ -1,6 +1,6 @@
 # 项目总览
 
-更新时间：2026-06-25
+更新时间：2026-06-26
 
 ## 项目目标
 
@@ -8,9 +8,10 @@
 
 - InterHand26M：提供高质量手部监督。
 - BEDLAM：原计划提供全身 SMPL-X 正则与防遗忘，但在当前 frozen backbone/body 设置下实际价值有限。
-- UBody：提供自然图里的手/脸上下文，是当前判断自然手泛化的关键数据。
+- UBody：提供自然图里的手/脸上下文，是当前判断 full-body natural-hand pipeline 的关键数据。
+- HInt：提供 held-out hand-interaction 2D 手关键点评测；当前 loader 是 hand-crop/local-hand 口径。
 
-当前战略已经收敛：**脸不是贡献点，真正需要解决的是手部微调后自然图手质量低于原始 OSX 的问题。**
+当前战略已经收敛：**脸不是贡献点；局部手能力已在 InterHand 与 HInt hand-crop 上超过 OSX，但完整自然图里的手部 pipeline（UBody natural-hand）仍低于原始 OSX。**
 
 ## 当前模型阶段
 
@@ -19,7 +20,9 @@
 | 手部微调 | `interhand_bedlam_c` | 已完成 | InterHand-test 全量 OSX 19.58mm → `_c` 16.82mm |
 | 面部微调 | `face_ubody_e` | 已完成 | EHF Face 回到约 6.20mm，但未超过原始 OSX |
 | 自然手评测 | `output/eval_ubody` | 三档 per-finger 完成 | 微调后自然手 2D 低于 OSX；退化沿指节递增、集中在 tip/j3，接近 `pretrained` 随机-ish 手头参照 |
-| Stage 3 | `joint_polish_f` | 已收口，终点 `snapshot_2` | InterHand PA 16.76（-14% vs OSX），UBody `[wa]` 0.250→0.229（接近 OSX 0.219、未追平、确认平台），EHF Face 6.25；epoch 2(Phase 2) 本质 wash，已停训不跑 epoch 3 |
+| HInt held-out | `output/eval_hint` | 全链补测完成 | HInt win 从 `_c snapshot_8` 已出现：OSX `wa` 0.487 → `_c`/Stage3 0.480；Stage3/COCO 对 HInt 基本无新增 |
+| Stage 3 | `joint_polish_f` | 已收口，终点 `snapshot_2` | InterHand PA 16.76（-14% vs OSX），HInt hand-crop 小幅赢 OSX，UBody `[wa]` 0.250→0.229（接近 OSX 0.219、未追平、确认平台），EHF Face 6.25；epoch 2(Phase 2) 本质 wash，已停训不跑 epoch 3 |
+| COCO pilot | `coco_pilot` | 已跑 2 epochs/中途评测 | MSCOCO no-gate 稳定；HInt 基本不动，InterHand/UBody 小幅 polish；MSCOCO hard ROI gate 曾导致 loss 失稳，暂不采用 |
 | 身体定性（shape） | `body_shape_t1` | 代码已实现·待跑 | 诊断＝betas mean-reversion（投影/朝向 OK）；T1 解冻 `shape_out`+`cam_out`，gated 默认关闭、对手/脸零影响，详见 `experiment_log.md` 2026-06-25 |
 
 ## 关键结果
@@ -40,6 +43,20 @@
 
 - 手部增益：19.58 → 16.82mm，**-2.76mm / -14%**。旧 18.47 partial 口径已废弃。
 - wrist-rel 仍在 84-87mm 高位，说明绝对手腕朝向/全局手系问题没有被这阶段训练彻底解决。
+
+### HInt Hand-Crop Held-Out
+
+HInt 当前只使用 partial 包中有图片的 Epic-Kitchens/NewDays 子集，共 3656 hands；Ego4D 标注因缺图片被跳过。当前 loader 以手 bbox 构造 hand-only crop，因此它更适合看 local hand-crop 泛化，不等价于 UBody 的 full-body natural-hand pipeline。
+
+| 模型 | abs PCK@0.2 | abs NME | wa PCK@0.2 | wa NME |
+|---|---:|---:|---:|---:|
+| 原始 OSX | 0.132 | 0.451 | 0.121 | 0.487 |
+| `_c snapshot_8` | **0.140** | **0.436** | **0.125** | **0.480** |
+| `face_ubody_e snapshot_4` | **0.140** | **0.436** | **0.125** | **0.480** |
+| `joint_polish_f snapshot_2` | 0.139 | 0.436 | 0.125 | 0.480 |
+| `coco_pilot snapshot_1_itr3000` | 0.139 | 0.435 | 0.125 | 0.480 |
+
+结论：HInt 相对 OSX 的小幅胜利在 `_c snapshot_8` 已经出现，后续 Stage3/COCO 基本不再改变。HInt 证明局部 hand-crop 能力不是纯 InterHand 过拟合，但它没有反映 Stage3 在 UBody 上的主要修复。
 
 ### EHF
 
@@ -77,13 +94,15 @@ Stage 3 snapshot_1 的 per-level `[wa]` NME 为 j1 0.206 / j2 0.225 / j3 0.242 /
 
 - UBody 上的脸不是贡献点，因为 OSX 本来就在 UBody 域内，微调最多恢复而非超越。
 - BEDLAM 在当前 frozen encoder/body/box 设置下没有发挥原本的全身 GT mesh 价值；还引入了小手/遮挡噪声工程成本。
-- 手部 benchmark 增益与自然图泛化存在冲突。Stage 3 的 UBody 自然手监督 + predicted ROI + mixed data 组合配方有效，但单独的根因变量尚未隔离；下一步应控制训练长度，按 guardrail 选点。
+- 手部 benchmark 增益与 full-body natural-hand 仍存在冲突，但不应再笼统称为“野外不泛化”：HInt hand-crop 已小幅超过 OSX，UBody full-body natural-hand 仍差于 OSX。
+- Stage 3 的 UBody 自然手监督 + predicted ROI + mixed data 组合配方有效，主要修复 UBody 末端退化；HInt 不动说明它测不到这个 full-body pipeline 瓶颈。
+- `coco_pilot` no-gate 配方稳定但只提供轻微 polish；MSCOCO hard ROI gate 因 pass 率低导致训练失稳，暂不作为主线。
 
 ## 推荐下一步
 
-Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`（决策与 snapshot_2 三件套对照见 `docs/experiment_log.md` 2026-06-25）。手部基准稳固（InterHand 16.76 / -14%），自然手回收到 `[wa]` 0.229（接近 OSX 0.219、未追平、确认平台），身体/脸平价。**不再继续 Stage 3 训练**。
+Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`（决策与 snapshot_2 三件套对照见 `docs/experiment_log.md` 2026-06-25，HInt 全链补测见 2026-06-26）。手部基准稳固（InterHand 16.76 / -14%），HInt hand-crop 小幅赢 OSX，UBody natural-hand 回收到 `[wa]` 0.229（接近 OSX 0.219、未追平、确认平台），身体/脸平价。**不再继续 Stage 3 训练**。
 
-下一步主线：**路线 B——加 COCO-WholeBody 真实 2D 修野外手泛化**（目标：InterHand 不退的同时野外手超 OSX；先低成本 pilot + HInt held-out 测"数据受限 vs 特征受限"，再决定是否叠路线 C 解冻 hand_roi_net）。完整路线/概率/决策门见 `docs/post_stage3_roadmap.md`。
+COCO pilot 已完成初判：HInt 无新增，UBody/InterHand 轻微改善，hard MSCOCO ROI gate 不稳定。后续若继续手部主线，重点应从“继续刷 HInt”转向 **full-body natural-hand pipeline**：优先考虑小心版路线 C（解冻 `hand_roi_net` + decoder/regressor 小 LR 共适应，先不动 `box_net`，不用 hard MSCOCO gate），主判据看 UBody natural-hand，HInt 作为 local hand-crop guardrail。完整路线修正见 `docs/post_stage3_roadmap.md`。
 
 次要/附带：**`body_shape_t1`**（代码已实现，默认关闭、对手/脸零影响）——配图级，不当主线。手部线 in-domain 打磨到此为止；wrist-rel 需架构改动、列为高风险 stretch；不碰解冻 body/encoder；不再继续 face-only。
 
@@ -97,7 +116,7 @@ Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`（决策与 snapshot_2 
 
 ## 文档维护规则
 
-- `docs/post_stage3_roadmap.md`：**Stage 3 之后的前瞻路线/决策**（in-the-wild hand 主线、候选路线、当前选择=加 COCO-WholeBody、pilot 与决策门）。规划方向时更新这里。
+- `docs/post_stage3_roadmap.md`：**Stage 3 之后的前瞻路线/决策**（in-the-wild hand 主线、HInt/UBody 口径修正、COCO pilot 复盘、路线 C 条件）。规划方向时更新这里。
 - `docs/continue.txt`：只放重开会话需要的短 handoff。
 - `docs/project_overview.md`：每次战略判断改变时更新。
 - `docs/experiment_log.md`：每次训练/评估完成后追加一条。
