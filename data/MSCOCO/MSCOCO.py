@@ -6,6 +6,7 @@ import copy
 import json
 import cv2
 import torch
+import random
 from pycocotools.coco import COCO
 from common.utils.human_models import smpl_x
 from common.utils.preprocessing import load_img, process_bbox, augmentation, process_db_coord, process_human_model_output
@@ -20,6 +21,12 @@ class MSCOCO(torch.utils.data.Dataset):
         else:
             self.img_path = osp.join(cfg.data_dir, 'coco')
             self.annot_path = osp.join(cfg.data_dir, 'coco', 'annotations')
+        # COCO/WholeBody images may be present but unreadable locally. During
+        # training, replace the whole sample with another readable sample instead
+        # of crashing a DataLoader worker. Test remains strict so evaluation
+        # indices stay aligned with annotations.
+        self._fallback_max_tries = 200
+        self._warned_bad_imgs = set()
 
         # mscoco joint set
         self.joint_set = {
@@ -223,15 +230,46 @@ class MSCOCO(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.datalist)
 
+    def _load_train_img_with_fallback(self, idx):
+        img_path = self.datalist[idx]['img_path']
+        try:
+            return load_img(img_path), copy.deepcopy(self.datalist[idx])
+        except (IOError, OSError) as exc:
+            first_error = exc
+            if img_path not in self._warned_bad_imgs:
+                self._warned_bad_imgs.add(img_path)
+                print("[MSCOCO] unreadable image, resampling another sample: %s" % img_path)
+
+        n = len(self.datalist)
+        fallback_num = min(n, self._fallback_max_tries)
+        for cand_idx in random.sample(range(n), fallback_num):
+            if cand_idx == idx:
+                continue
+            cand = self.datalist[cand_idx]
+            cand_path = cand['img_path']
+            if cand_path == img_path:
+                continue
+            try:
+                img = load_img(cand_path)
+            except (IOError, OSError):
+                continue
+            cand_shape = cand.get('img_shape')
+            if cand_shape is not None and (img.shape[0] != cand_shape[0] or img.shape[1] != cand_shape[1]):
+                continue
+            return img, copy.deepcopy(cand)
+
+        raise IOError(
+            "Fail to read %s and %d random fallback samples were also unreadable"
+            % (img_path, fallback_num)
+        ) from first_error
+
     def __getitem__(self, idx):
-        data = copy.deepcopy(self.datalist[idx])
 
         # train mode
         if self.data_split == 'train':
+            img, data = self._load_train_img_with_fallback(idx)
             img_path, img_shape = data['img_path'], data['img_shape']
 
-            # image load
-            img = load_img(img_path)
             bbox = data['bbox']
             img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
             img = self.transform(img.astype(np.float32)) / 255.
@@ -271,6 +309,10 @@ class MSCOCO(torch.utils.data.Dataset):
                     = process_human_model_output(smplx_param['smplx_param'], smplx_param['cam_param'], do_flip,
                                                  img_shape, img2bb_trans, rot, 'smplx')
                 is_valid_fit = True
+                smplx_cam_trans = np.array(
+                    smplx_param['smplx_param'].get('trans', [0, 0, 0]),
+                    dtype=np.float32
+                ).reshape(3)
 
                 """
                 # for debug
@@ -291,6 +333,8 @@ class MSCOCO(torch.utils.data.Dataset):
                 smplx_pose = np.zeros((smpl_x.orig_joint_num * 3), dtype=np.float32)
                 smplx_shape = np.zeros((smpl_x.shape_param_dim), dtype=np.float32)
                 smplx_expr = np.zeros((smpl_x.expr_code_dim), dtype=np.float32)
+                smplx_cam_trans = np.zeros((3), dtype=np.float32)
+                smplx_mesh_cam_orig = np.zeros((smpl_x.vertex_num, 3), dtype=np.float32)
                 smplx_pose_valid = np.zeros((smpl_x.orig_joint_num), dtype=np.float32)
                 smplx_expr_valid = False
                 is_valid_fit = False
@@ -314,6 +358,7 @@ class MSCOCO(torch.utils.data.Dataset):
             targets = {'joint_img': joint_img, 'joint_cam': joint_cam, 'smplx_joint_img': smplx_joint_img,
                        'smplx_joint_cam': smplx_joint_cam,
                        'smplx_pose': smplx_pose, 'smplx_shape': smplx_shape, 'smplx_expr': smplx_expr,
+                       'smplx_cam_trans': smplx_cam_trans, 'smplx_mesh_cam': smplx_mesh_cam_orig,
                        'lhand_bbox_center': lhand_bbox_center,
                        'lhand_bbox_size': lhand_bbox_size, 'rhand_bbox_center': rhand_bbox_center,
                        'rhand_bbox_size': rhand_bbox_size,
@@ -323,11 +368,20 @@ class MSCOCO(torch.utils.data.Dataset):
                          'smplx_pose_valid': smplx_pose_valid, 'smplx_shape_valid': float(smplx_shape_valid),
                          'smplx_expr_valid': float(smplx_expr_valid), 'is_3D': float(False),
                          'lhand_bbox_valid': lhand_bbox_valid,
-                         'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid}
+                         'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid,
+                         # Fork mixed-batch schema: align meta keys with BEDLAM/UBody/
+                         # InterHand so default_collate over a mixed batch does not fail.
+                         # MSCOCO is none of those sources (all flags False); dataset_id
+                         # 3 (BEDLAM 0 / InterHand 1 / UBody 2 already used).
+                         'bb2img_trans': bb2img_trans,
+                         'dataset_id': float(3),
+                         'is_interhand': float(False), 'is_bedlam': float(False),
+                         'is_ubody': float(False), 'is_hand_only': float(False)}
             return inputs, targets, meta_info
 
         # test mode
         else:
+            data = copy.deepcopy(self.datalist[idx])
             img_path, img_shape = data['img_path'], data['img_shape']
 
             # image load

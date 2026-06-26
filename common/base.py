@@ -294,6 +294,14 @@ class Trainer(Base):
                 # 过滤掉不需要的 smplx_layer
                 if 'smplx_layer' not in k:
                     trainable_state[k] = v
+                continue
+
+            # Body-shape T1 (gated): also persist the whitelisted body_regressor
+            # sub-heads (shape_out/cam_out). Empty prefixes -> no extra keys saved.
+            if any(clean_key.startswith(p)
+                   for p in getattr(self.model.module, 'body_shape_trainable_prefixes', [])):
+                if 'smplx_layer' not in k:
+                    trainable_state[k] = v
 
         # ---- 核心改动：用精简版替换掉庞大的完整模型 ----
         state['network'] = trainable_state 
@@ -626,8 +634,19 @@ class Trainer(Base):
 
             is_frozen_module = module_name in model.module.frozen_modules
             is_trainable_module = module_name in model.module.trainable_module_names
+            # Body-shape T1 (gated, default no-op): whitelisted sub-heads of an
+            # otherwise-frozen module (body_regressor.shape_out/cam_out) are allowed
+            # to be trainable. Empty prefix list -> falls through to original logic.
+            is_body_shape = any(
+                clean_name.startswith(p)
+                for p in getattr(model.module, 'body_shape_trainable_prefixes', [])
+            )
 
-            if is_frozen_module:
+            if is_body_shape:
+                if not param.requires_grad:
+                    errors.append(f"❌ {name}: body-shape 子头但 requires_grad=False")
+                trainable_count += 1
+            elif is_frozen_module:
                 if param.requires_grad:
                     errors.append(f"❌ {name}: 冻结模块但 requires_grad=True")
                 frozen_count += 1

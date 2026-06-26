@@ -492,6 +492,7 @@ class InterHand26M(torch.utils.data.Dataset):
         smplx_pose, smplx_pose_valid = self._make_smplx_pose_target(data["mano_param"], do_flip)
         smplx_shape = np.zeros((smpl_x.shape_param_dim), dtype=np.float32)
         smplx_expr = np.zeros((smpl_x.expr_code_dim), dtype=np.float32)
+        smplx_cam_trans = np.zeros((3), dtype=np.float32)
         smplx_mesh_cam = np.zeros((smpl_x.vertex_num, 3), dtype=np.float32)
 
         inputs = {"img": img}
@@ -503,6 +504,7 @@ class InterHand26M(torch.utils.data.Dataset):
             "smplx_pose": smplx_pose,
             "smplx_shape": smplx_shape,
             "smplx_expr": smplx_expr,
+            "smplx_cam_trans": smplx_cam_trans,
             "smplx_mesh_cam": smplx_mesh_cam,
             "lhand_bbox_center": lhand_bbox_center,
             "lhand_bbox_size": lhand_bbox_size,

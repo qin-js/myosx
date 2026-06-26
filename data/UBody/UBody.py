@@ -4,6 +4,7 @@ import numpy as np
 from config import cfg
 import copy
 import json
+import pickle
 import cv2
 import torch
 from pycocotools.coco import COCO
@@ -13,14 +14,86 @@ from common.utils.transforms import rigid_align
 from torch.utils.data.dataset import Dataset
 import random
 
+_UBODY_ANNOTATION_CACHE_VERSION = 1
+
+
+def _resolve_annotation_cache_path(json_path, scene):
+    cache_dir = getattr(cfg, 'ubody_annotation_cache_dir', '')
+    if cache_dir:
+        if not osp.isabs(cache_dir):
+            cache_dir = osp.join(cfg.root_dir, cache_dir)
+        return osp.join(cache_dir, scene, osp.splitext(osp.basename(json_path))[0] + '.pkl')
+    return osp.splitext(json_path)[0] + '.pkl'
+
+
+def _unwrap_annotation_cache(payload, json_path):
+    if not (
+        isinstance(payload, dict) and
+        payload.get('_ubody_annotation_cache_version') == _UBODY_ANNOTATION_CACHE_VERSION and
+        'data' in payload
+    ):
+        # Also accept plain pickle dumps of the JSON object for compatibility
+        # with ad-hoc caches.
+        return payload, None
+
+    meta = payload.get('json', {})
+    try:
+        stat = os.stat(json_path)
+    except OSError as e:
+        if payload.get('allow_missing_json', False):
+            return payload['data'], None
+        return None, 'cannot stat source JSON: %s' % e
+
+    if meta.get('size') != stat.st_size or meta.get('mtime_ns') != stat.st_mtime_ns:
+        return None, 'source JSON changed'
+    return payload['data'], None
+
+
+def _load_annotation_data(json_path, scene, name):
+    pkl_path = _resolve_annotation_cache_path(json_path, scene)
+    if getattr(cfg, 'ubody_use_pkl_annotation', True) and osp.isfile(pkl_path):
+        with open(pkl_path, 'rb') as f:
+            payload = pickle.load(f)
+        data, stale_reason = _unwrap_annotation_cache(payload, json_path)
+        if data is not None:
+            print('load UBody %s annotation from %s.' % (name, pkl_path))
+            return data
+        print('ignore stale UBody %s annotation cache %s (%s).' % (name, pkl_path, stale_reason))
+
+    with open(json_path, 'r') as f:
+        print('load UBody %s annotation from %s.' % (name, json_path))
+        return json.load(f)
+
+
+def _load_coco_from_annotation(json_path, scene):
+    dataset = _load_annotation_data(json_path, scene, 'keypoint')
+    db = COCO()
+    db.dataset = dataset
+    db.createIndex()
+    return db
+
+
 class UBody_Part(torch.utils.data.Dataset):
     def __init__(self, transform, data_split, scene):
         self.transform = transform
         self.data_split = data_split
+        self.scene = scene
         self.img_path = osp.join(cfg.data_dir, 'UBody', 'images', scene)
-        self.annot_path = osp.join(cfg.data_dir, 'UBody', 'annotations', scene, 'keypoint_annotation.json')
-        self.smplx_annot_path = osp.join(cfg.data_dir, 'UBody', 'annotations', scene, 'smplx_annotation.json')
+        annot_root = getattr(cfg, 'ubody_annotation_dir', '')
+        if annot_root:
+            if not osp.isabs(annot_root):
+                annot_root = osp.join(cfg.root_dir, annot_root)
+        else:
+            annot_root = osp.join(cfg.data_dir, 'UBody', 'annotations')
+        self.annot_path = osp.join(annot_root, scene, 'keypoint_annotation.json')
+        self.smplx_annot_path = osp.join(annot_root, scene, 'smplx_annotation.json')
         self.test_video_list_path = osp.join(cfg.data_dir, 'UBody', 'splits', 'intra_scene_test_list.npy')
+        # Some local UBody image files can exist but fail cv2 decoding
+        # (truncated / corrupt). During training, replace that whole sample with
+        # another readable sample from the same scene instead of killing the
+        # DataLoader worker. Test remains strict to avoid corrupting metrics.
+        self._fallback_max_tries = 200
+        self._warned_bad_imgs = set()
 
         # mscoco joint set
         self.joint_set = {
@@ -72,10 +145,8 @@ class UBody_Part(torch.utils.data.Dataset):
         return joint_img
 
     def load_data(self):
-        db = COCO(self.annot_path)
-        with open(self.smplx_annot_path) as f:
-            print(f'load smplx param from {self.smplx_annot_path}.')
-            smplx_params = json.load(f)
+        db = _load_coco_from_annotation(self.annot_path, self.scene)
+        smplx_params = _load_annotation_data(self.smplx_annot_path, self.scene, 'smplx')
         test_video_list = np.load(self.test_video_list_path)
         print(f'load test_video_list from {self.test_video_list_path}.')
         test_video_list = test_video_list.tolist()
@@ -85,9 +156,10 @@ class UBody_Part(torch.utils.data.Dataset):
             i = 0
             for aid in db.anns.keys():
                 i = i + 1
-                if i % cfg.train_sample_interval != 0:
-                    continue
                 ann = db.anns[aid]
+                sample_i = ann.get('_ubody_orig_ann_order', i)
+                if sample_i % cfg.train_sample_interval != 0:
+                    continue
                 img = db.loadImgs(ann['image_id'])[0]
                 if img['file_name'].startswith('/'):
                     file_name = img['file_name'][1:]   # [1:] means delete '/'
@@ -173,9 +245,10 @@ class UBody_Part(torch.utils.data.Dataset):
             i = 0
             for aid in db.anns.keys():
                 i = i + 1
-                if i % cfg.test_sample_interval != 0:
-                    continue
                 ann = db.anns[aid]
+                sample_i = ann.get('_ubody_orig_ann_order', i)
+                if sample_i % cfg.test_sample_interval != 0:
+                    continue
                 img = db.loadImgs(ann['image_id'])[0]
                 if img['file_name'].startswith('/'):
                     file_name = img['file_name'][1:]  # [1:] means delete '/'
@@ -293,15 +366,46 @@ class UBody_Part(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.datalist)
 
+    def _load_train_img_with_fallback(self, idx):
+        img_path = self.datalist[idx]['img_path']
+        try:
+            return load_img(img_path), copy.deepcopy(self.datalist[idx])
+        except (IOError, OSError) as exc:
+            first_error = exc
+            if img_path not in self._warned_bad_imgs:
+                self._warned_bad_imgs.add(img_path)
+                print("[UBody] unreadable image, resampling another sample: %s" % img_path)
+
+        n = len(self.datalist)
+        fallback_num = min(n, self._fallback_max_tries)
+        for cand_idx in random.sample(range(n), fallback_num):
+            if cand_idx == idx:
+                continue
+            cand = self.datalist[cand_idx]
+            cand_path = cand['img_path']
+            if cand_path == img_path:
+                continue
+            try:
+                img = load_img(cand_path)
+            except (IOError, OSError):
+                continue
+            cand_shape = cand.get('img_shape')
+            if cand_shape is not None and (img.shape[0] != cand_shape[0] or img.shape[1] != cand_shape[1]):
+                continue
+            return img, copy.deepcopy(cand)
+
+        raise IOError(
+            "Fail to read %s and %d random fallback samples were also unreadable"
+            % (img_path, fallback_num)
+        ) from first_error
+
     def __getitem__(self, idx):
-        data = copy.deepcopy(self.datalist[idx])
 
         # train mode
         if self.data_split == 'train':
+            img, data = self._load_train_img_with_fallback(idx)
             img_path, img_shape = data['img_path'], data['img_shape']
 
-            # image load
-            img = load_img(img_path)
             bbox = data['bbox']
             img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(img, bbox, self.data_split)
             img = self.transform(img.astype(np.float32)) / 255.
@@ -341,6 +445,7 @@ class UBody_Part(torch.utils.data.Dataset):
                     smplx_param['smplx_param'], smplx_param['cam_param'], do_flip, img_shape, img2bb_trans, rot,
                     'smplx')
                 is_valid_fit = True
+                smplx_cam_trans = np.array(smplx_param['smplx_param']['trans'], dtype=np.float32)
 
                 """
                 # for debug
@@ -361,7 +466,9 @@ class UBody_Part(torch.utils.data.Dataset):
                 smplx_pose = np.zeros((smpl_x.orig_joint_num * 3), dtype=np.float32)
                 smplx_shape = np.zeros((smpl_x.shape_param_dim), dtype=np.float32)
                 smplx_expr = np.zeros((smpl_x.expr_code_dim), dtype=np.float32)
+                smplx_mesh_cam_orig = np.zeros((smpl_x.vertex_num, 3), dtype=np.float32)
                 smplx_pose_valid = np.zeros((smpl_x.orig_joint_num), dtype=np.float32)
+                smplx_cam_trans = np.zeros((3), dtype=np.float32)
                 smplx_expr_valid = False
                 is_valid_fit = False
 
@@ -383,7 +490,8 @@ class UBody_Part(torch.utils.data.Dataset):
             inputs = {'img': img, }
             targets = {'joint_img': joint_img, 'joint_cam': joint_cam, 'smplx_joint_img': smplx_joint_img,
                        'smplx_joint_cam': smplx_joint_cam, 'smplx_pose': smplx_pose, 'smplx_shape': smplx_shape,
-                       'smplx_expr': smplx_expr, 'lhand_bbox_center': lhand_bbox_center,
+                       'smplx_expr': smplx_expr, 'smplx_cam_trans': smplx_cam_trans,
+                       'smplx_mesh_cam': smplx_mesh_cam_orig, 'lhand_bbox_center': lhand_bbox_center,
                        'lhand_bbox_size': lhand_bbox_size, 'rhand_bbox_center': rhand_bbox_center,
                        'rhand_bbox_size': rhand_bbox_size, 'face_bbox_center': face_bbox_center,
                        'face_bbox_size': face_bbox_size}
@@ -392,11 +500,13 @@ class UBody_Part(torch.utils.data.Dataset):
                          'smplx_shape_valid': float(smplx_shape_valid), 'smplx_expr_valid': float(smplx_expr_valid),
                          'is_3D': float(False), 'lhand_bbox_valid': lhand_bbox_valid,
                          'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid,
-                         'is_interhand': float(False), 'is_bedlam': float(False), 'is_ubody': float(True)}
+                         'dataset_id': float(2), 'is_interhand': float(False), 'is_bedlam': float(False),
+                         'is_ubody': float(True), 'is_hand_only': float(False), 'bb2img_trans': bb2img_trans}
             return inputs, targets, meta_info
 
         # test mode
         else:
+            data = copy.deepcopy(self.datalist[idx])
             img_path, img_shape = data['img_path'], data['img_shape']
 
             # image load
@@ -518,6 +628,9 @@ class UBody(Dataset):
             self.datalist += db.datalist
 
         self.db_num = len(self.dbs)
+        if self.db_num == 0:
+            raise RuntimeError('No UBody scene datasets were found under %s' % folder)
+        self.joint_set = self.dbs[0].joint_set
         self.max_db_data_num = max([len(db) for db in self.dbs])
         self.db_len_cumsum = np.cumsum([len(db) for db in self.dbs])
         self.make_same_len = cfg.make_same_len
@@ -578,7 +691,25 @@ class UBody(Dataset):
         annots = self.datalist
         sample_num = len(outs)
         eval_result = {'pa_mpvpe_all': [], 'pa_mpvpe_hand': [], 'pa_mpvpe_face': [], 'mpvpe_all': [], 'mpvpe_hand': [],
-                       'mpvpe_face': [], 'pa_mpjpe_body': [], 'pa_mpjpe_hand': []}
+                       'mpvpe_face': [], 'pa_mpjpe_body': [], 'pa_mpjpe_hand': [],
+                       # --- Natural-hand 2D keypoint metrics (vs the REAL COCO-WholeBody
+                       # hand annotations, NOT the SMPL-X pseudo-GT mesh). This is the
+                       # in-the-wild hand-quality signal the pseudo-GT MPJPE above cannot
+                       # capture (OSX was fit to that pseudo-GT, so it is biased). Errors
+                       # are normalized per hand by the GT hand-keypoint bbox diagonal, so
+                       # PCK/NME are scale-invariant. 'abs' = absolute placement included;
+                       # 'wa' = wrist-aligned (single-point translation) to isolate finger
+                       # articulation from global hand placement.
+                       'hand2d_pck01_abs': [], 'hand2d_pck02_abs': [], 'hand2d_nme_abs': [],
+                       'hand2d_pck01_wa': [], 'hand2d_pck02_wa': [], 'hand2d_nme_wa': [],
+                       'hand2d_pck02_abs_l': [], 'hand2d_pck02_abs_r': [],
+                       'hand2d_nme_wa_l': [], 'hand2d_nme_wa_r': [], 'hand2d_n': []}
+        for name in ('thumb', 'index', 'middle', 'ring', 'pinky'):
+            eval_result['hand2d_wa_nme_' + name] = []
+            eval_result['hand2d_wa_n_' + name] = []
+        for name in ('j1', 'j2', 'j3', 'tip'):
+            eval_result['hand2d_wa_nme_' + name] = []
+            eval_result['hand2d_wa_n_' + name] = []
         for n in range(sample_num):
             annot = annots[cur_sample_idx + n]
             out = outs[n]
@@ -692,6 +823,85 @@ class UBody(Dataset):
             if len(pa_mpjpe_hand)>0:
                 eval_result['pa_mpjpe_hand'].append(np.mean(pa_mpjpe_hand))
 
+            # --- Natural-hand 2D keypoint accuracy vs REAL annotations ---
+            # The pa_mpjpe_hand above compares the predicted mesh to the SMPL-X
+            # pseudo-GT mesh; since OSX was fit to that pseudo-GT it cannot tell
+            # "matches the fit label" from "correct on the actual image". Here we
+            # instead project the predicted hand joints (regressed from the
+            # predicted mesh) into the original image and compare to the real
+            # COCO-WholeBody hand keypoints -> the in-the-wild hand-quality signal.
+            if not hasattr(self, '_hand2d_idx'):
+                jn = self.joint_set['joints_name']
+                ls = jn.index('L_Wrist_Hand'); rs = jn.index('R_Wrist_Hand')
+                expected = ('Wrist_Hand',
+                            'Thumb_1', 'Thumb_2', 'Thumb_3', 'Thumb_4',
+                            'Index_1', 'Index_2', 'Index_3', 'Index_4',
+                            'Middle_1', 'Middle_2', 'Middle_3', 'Middle_4',
+                            'Ring_1', 'Ring_2', 'Ring_3', 'Ring_4',
+                            'Pinky_1', 'Pinky_2', 'Pinky_3', 'Pinky_4')
+                self._hand2d_idx = {'l': list(range(ls, ls + 21)),
+                                     'r': list(range(rs, rs + 21))}
+                for side, idxs in self._hand2d_idx.items():
+                    gt_order = tuple(jn[i][2:] for i in idxs)
+                    assert gt_order == expected, 'Unexpected UBody %s hand order: %s' % (side, gt_order)
+                self._hand2d_finger_idx = {
+                    'thumb': np.array([1, 2, 3, 4], dtype=np.int64),
+                    'index': np.array([5, 6, 7, 8], dtype=np.int64),
+                    'middle': np.array([9, 10, 11, 12], dtype=np.int64),
+                    'ring': np.array([13, 14, 15, 16], dtype=np.int64),
+                    'pinky': np.array([17, 18, 19, 20], dtype=np.int64),
+                }
+                self._hand2d_level_idx = {
+                    'j1': np.array([1, 5, 9, 13, 17], dtype=np.int64),
+                    'j2': np.array([2, 6, 10, 14, 18], dtype=np.int64),
+                    'j3': np.array([3, 7, 11, 15, 19], dtype=np.int64),
+                    'tip': np.array([4, 8, 12, 16, 20], dtype=np.int64),
+                }
+            gt_kpt = annot['joint_img'][:, :2]          # (134,2), original image px
+            gt_val = annot['joint_valid'][:, 0] > 0     # (134,)
+            pred_hand_cam = {
+                'l': np.dot(smpl_x.orig_hand_regressor['left'], mesh_out),
+                'r': np.dot(smpl_x.orig_hand_regressor['right'], mesh_out),
+            }
+            for side in ('l', 'r'):
+                idxs = self._hand2d_idx[side]
+                gt = gt_kpt[idxs]                        # (21,2)
+                v = gt_val[idxs]                         # (21,)
+                if int(v.sum()) < 4:
+                    continue                             # too few visible GT joints
+                span = float(np.linalg.norm(gt[v].max(0) - gt[v].min(0)))
+                if span < 1e-3:
+                    continue                             # degenerate hand
+                pred = self.perspective_transform(
+                    cam_trans, out['bb2img_trans'], pred_hand_cam[side] - cam_trans)[:, :2]
+                err_abs = np.linalg.norm(pred - gt, axis=1) / span
+                e = err_abs[v]   # normalized err
+                eval_result['hand2d_pck01_abs'].append(float((e < 0.1).mean()))
+                eval_result['hand2d_pck02_abs'].append(float((e < 0.2).mean()))
+                eval_result['hand2d_nme_abs'].append(float(e.mean()))
+                eval_result['hand2d_pck02_abs_' + side].append(float((e < 0.2).mean()))
+                eval_result['hand2d_n'].append(1)
+                # wrist-aligned: shift pred so its wrist (joint 0) matches GT wrist,
+                # isolating finger articulation from where the hand is placed.
+                if v[0]:
+                    pred_wa = pred + (gt[0] - pred[0])
+                    err_wa = np.linalg.norm(pred_wa - gt, axis=1) / span
+                    ew = err_wa[v]
+                    eval_result['hand2d_pck01_wa'].append(float((ew < 0.1).mean()))
+                    eval_result['hand2d_pck02_wa'].append(float((ew < 0.2).mean()))
+                    eval_result['hand2d_nme_wa'].append(float(ew.mean()))
+                    eval_result['hand2d_nme_wa_' + side].append(float(ew.mean()))
+                    for name, finger_idxs in self._hand2d_finger_idx.items():
+                        vf = v[finger_idxs]
+                        if int(vf.sum()) >= 2:
+                            eval_result['hand2d_wa_nme_' + name].append(float(err_wa[finger_idxs][vf].mean()))
+                            eval_result['hand2d_wa_n_' + name].append(1)
+                    for name, level_idxs in self._hand2d_level_idx.items():
+                        vf = v[level_idxs]
+                        if int(vf.sum()) >= 2:
+                            eval_result['hand2d_wa_nme_' + name].append(float(err_wa[level_idxs][vf].mean()))
+                            eval_result['hand2d_wa_n_' + name].append(1)
+
             # data_dict = {}
             # data_dict['mpvpe_all'] = eval_result['mpvpe_all'][-1]
             # data_dict['mpvpe_hand'] = eval_result['mpvpe_hand'][-1]
@@ -748,6 +958,34 @@ class UBody(Dataset):
         print('PA MPJPE (Body): %.2f mm' % np.mean(eval_result['pa_mpjpe_body']))
         print('PA MPJPE (Hands): %.2f mm' % np.mean(eval_result['pa_mpjpe_hand']))
 
+        # --- Natural-hand 2D keypoint metrics (vs REAL annotations) ---
+        def _m(k):
+            v = eval_result.get(k, [])
+            return float(np.mean(v)) if len(v) else float('nan')
+        def _n(k):
+            return len(eval_result.get(k, []))
+        n_hand = len(eval_result.get('hand2d_n', []))
+        finger_names = ('thumb', 'index', 'middle', 'ring', 'pinky')
+        level_names = ('j1', 'j2', 'j3', 'tip')
+        print()
+        print('--- Natural-hand 2D (vs real hand kpts; PCK/NME normalized by GT hand-kpt bbox diag) ---')
+        print('Evaluated hands: %d' % n_hand)
+        print('[abs]           PCK@0.1: %.3f  PCK@0.2: %.3f  NME: %.3f' % (
+            _m('hand2d_pck01_abs'), _m('hand2d_pck02_abs'), _m('hand2d_nme_abs')))
+        print('[wrist-aligned] PCK@0.1: %.3f  PCK@0.2: %.3f  NME: %.3f' % (
+            _m('hand2d_pck01_wa'), _m('hand2d_pck02_wa'), _m('hand2d_nme_wa')))
+        print('[abs] PCK@0.2  L: %.3f  R: %.3f    [wa] NME  L: %.3f  R: %.3f' % (
+            _m('hand2d_pck02_abs_l'), _m('hand2d_pck02_abs_r'),
+            _m('hand2d_nme_wa_l'), _m('hand2d_nme_wa_r')))
+        print('[wa-finger] NME ' + '  '.join(
+            '%s: %.3f' % (name, _m('hand2d_wa_nme_' + name)) for name in finger_names))
+        print('[wa-finger] N   ' + '  '.join(
+            '%s: %d' % (name, _n('hand2d_wa_n_' + name)) for name in finger_names))
+        print('[wa-level]  NME ' + '  '.join(
+            '%s: %.3f' % (name, _m('hand2d_wa_nme_' + name)) for name in level_names))
+        print('[wa-level]  N   ' + '  '.join(
+            '%s: %d' % (name, _n('hand2d_wa_n_' + name)) for name in level_names))
+
         f = open(os.path.join(cfg.result_dir, 'result.txt'), 'w')
         f.write(f'UBody dataset: \n')
         f.write('PA MPVPE (All): %.2f mm\n' % np.mean(eval_result['pa_mpvpe_all']))
@@ -758,3 +996,21 @@ class UBody(Dataset):
         f.write('MPVPE (Face): %.2f mm\n' % np.mean(eval_result['mpvpe_face']))
         f.write('PA MPJPE (Body): %.2f mm\n' % np.mean(eval_result['pa_mpjpe_body']))
         f.write('PA MPJPE (Hands): %.2f mm\n' % np.mean(eval_result['pa_mpjpe_hand']))
+        f.write('--- Natural-hand 2D (vs real hand kpts; normalized by GT hand-kpt bbox diag) ---\n')
+        f.write('Evaluated hands: %d\n' % n_hand)
+        f.write('[abs]           PCK@0.1: %.3f  PCK@0.2: %.3f  NME: %.3f\n' % (
+            _m('hand2d_pck01_abs'), _m('hand2d_pck02_abs'), _m('hand2d_nme_abs')))
+        f.write('[wrist-aligned] PCK@0.1: %.3f  PCK@0.2: %.3f  NME: %.3f\n' % (
+            _m('hand2d_pck01_wa'), _m('hand2d_pck02_wa'), _m('hand2d_nme_wa')))
+        f.write('[abs] PCK@0.2  L: %.3f  R: %.3f    [wa] NME  L: %.3f  R: %.3f\n' % (
+            _m('hand2d_pck02_abs_l'), _m('hand2d_pck02_abs_r'),
+            _m('hand2d_nme_wa_l'), _m('hand2d_nme_wa_r')))
+        f.write('[wa-finger] NME ' + '  '.join(
+            '%s: %.3f' % (name, _m('hand2d_wa_nme_' + name)) for name in finger_names) + '\n')
+        f.write('[wa-finger] N   ' + '  '.join(
+            '%s: %d' % (name, _n('hand2d_wa_n_' + name)) for name in finger_names) + '\n')
+        f.write('[wa-level]  NME ' + '  '.join(
+            '%s: %.3f' % (name, _m('hand2d_wa_nme_' + name)) for name in level_names) + '\n')
+        f.write('[wa-level]  N   ' + '  '.join(
+            '%s: %d' % (name, _n('hand2d_wa_n_' + name)) for name in level_names) + '\n')
+        f.close()

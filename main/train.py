@@ -7,23 +7,41 @@ import torch
 DEFAULT_PHASE1_EPOCHS = 10
 
 
-def _per_source_losses(raw_loss, meta_info):
-    """Split per-sample losses by dataset source for separate monitoring.
-
-    raw_loss: dict of loss tensors still carrying the batch dim (dim 0), BEFORE
-    any .mean(). Returns {'interhand': {...}, 'bedlam': {...}, 'ubody': {...}}
-    ('ubody' only when meta_info carries is_ubody) where each value is the mean
-    loss over the samples of that source in the batch. Returns None if the
-    interhand/bedlam source flags are absent (e.g. single-dataset training).
-    """
+def _source_masks(meta_info):
     if 'is_interhand' not in meta_info or 'is_bedlam' not in meta_info:
         return None
+
     masks = {
         'interhand': meta_info['is_interhand'].detach().view(-1).float(),
         'bedlam': meta_info['is_bedlam'].detach().view(-1).float(),
     }
     if 'is_ubody' in meta_info:
         masks['ubody'] = meta_info['is_ubody'].detach().view(-1).float()
+
+    if 'dataset_id' in meta_info:
+        dataset_id = meta_info['dataset_id'].detach().view(-1)
+        masks['mscoco'] = (dataset_id == 3).float()
+    else:
+        known = torch.zeros_like(next(iter(masks.values())))
+        for mask in masks.values():
+            known = torch.maximum(known, mask.to(known.device))
+        masks['mscoco'] = (1.0 - known.clamp(max=1.0)).clamp(min=0.0)
+
+    return masks
+
+
+def _per_source_losses(raw_loss, meta_info):
+    """Split per-sample losses by dataset source for separate monitoring.
+
+    raw_loss: dict of loss tensors still carrying the batch dim (dim 0), BEFORE
+    any .mean(). Returns {'interhand': {...}, 'bedlam': {...}, 'ubody': {...}}
+    plus {'mscoco': {...}} when present, where each value is the mean loss over
+    the samples of that source in the batch. Returns None if the source flags are
+    absent (e.g. single-dataset training).
+    """
+    masks = _source_masks(meta_info)
+    if masks is None:
+        return None
     batch_n = next(iter(masks.values())).numel()
     out = {src: {} for src in masks}
     for k, v in raw_loss.items():
@@ -54,12 +72,10 @@ def _raise_nonfinite_loss(loss, total_loss, meta_info, logger, epoch, itr):
             loss_state.append('%s=%s' % (k, value.detach().cpu().item()))
 
     batch_state = []
-    if 'is_interhand' in meta_info:
-        batch_state.append('interhand=%.0f' % meta_info['is_interhand'].sum().detach().cpu().item())
-    if 'is_bedlam' in meta_info:
-        batch_state.append('bedlam=%.0f' % meta_info['is_bedlam'].sum().detach().cpu().item())
-    if 'is_ubody' in meta_info:
-        batch_state.append('ubody=%.0f' % meta_info['is_ubody'].sum().detach().cpu().item())
+    source_masks = _source_masks(meta_info)
+    if source_masks is not None:
+        for src_name, mask in source_masks.items():
+            batch_state.append('%s=%.0f' % (src_name, mask.sum().detach().cpu().item()))
 
     msg = 'Non-finite total_loss before backward at epoch %d itr %d. %s %s' % (
         epoch,
@@ -97,6 +113,16 @@ def parse_args():
                         help='hand_position_net 单独梯度裁剪范数 (<=0 关闭)')
     parser.add_argument('--phase1_epochs', type=int, default=DEFAULT_PHASE1_EPOCHS,
                         help='手部微调 Phase 1 的 epoch 数；默认覆盖 10 epoch 短程混训')
+    parser.add_argument('--save_iters', type=int, default=0,
+                        help='>0 时在每个 epoch 中途每 N 个 iter 额外保存一个 '
+                             'snapshot_{epoch}_itr{N}.pth.tar（评估候选点，与 epoch 末快照'
+                             '分开命名、互不覆盖）；0=关闭，保持原有每 epoch 保存')
+    parser.add_argument('--train_body_shape', action='store_true',
+                        help='Body-shape T1 微实验：解冻 body_regressor.shape_out+cam_out（其余 '
+                             'body_regressor 仍冻结），在 BEDLAM GT betas 上微调体型/相机；'
+                             '默认关闭，关闭时对手/脸训练零影响')
+    parser.add_argument('--body_shape_lr', type=float, default=1e-5,
+                        help='body-shape T1 的 shape_out/cam_out 学习率（仅 --train_body_shape 时生效）')
     parser.add_argument('--train_face_modules', action='store_true',
                         help='默认冻结 face 分支；需要 UBody face/expression 微调时显式开启')
     parser.add_argument('--no_train_hand_modules', action='store_true',
@@ -110,7 +136,22 @@ def parse_args():
                         help='Phase 1 不训练 hand_regressor，仅用于对比旧热身策略')
     parser.add_argument('--bedlam_max_samples', type=int, default=None)
     parser.add_argument('--interhand_max_samples', type=int, default=None)
-    parser.add_argument('--bedlam_use_hand_roi_quality', action='store_true')
+    parser.add_argument('--bedlam_use_hand_roi_quality', action='store_true',
+                        help='对 BEDLAM 启用动态手部 ROI coverage 门控，低覆盖手只屏蔽 hand-space 2D loss')
+    parser.add_argument('--ubody_use_hand_roi_quality', action='store_true',
+                        help='对 UBody 启用动态手部 ROI coverage 门控；Stage 3 joint polish 的保护项，'
+                             '不会像 BEDLAM B 类修复那样整源切断 hand img loss')
+    parser.add_argument('--mscoco_use_hand_roi_quality', action='store_true',
+                        help='对 MSCOCO/COCO-WholeBody 启用动态手部 ROI coverage 门控；'
+                             '与 UBody 使用同一类自然图手部保护逻辑')
+    parser.add_argument('--ubody_hand_roi_coverage_thr', type=float, default=None,
+                        help='UBody 手部 ROI coverage 门控阈值；默认沿用 cfg，Stage 3 前需短跑确认')
+    parser.add_argument('--ubody_hand_roi_min_joints', type=int, default=None,
+                        help='UBody 手部 ROI 门控所需最少 GT-valid 手关节点数；默认沿用 cfg，Stage 3 前需短跑确认')
+    parser.add_argument('--mscoco_hand_roi_coverage_thr', type=float, default=None,
+                        help='MSCOCO 手部 ROI coverage 门控阈值；默认沿用 cfg')
+    parser.add_argument('--mscoco_hand_roi_min_joints', type=int, default=None,
+                        help='MSCOCO 手部 ROI 门控所需最少 GT-valid 手关节点数；默认沿用 cfg')
     parser.add_argument('--bedlam_no_hand_img_loss', action='store_true',
                         help='BEDLAM 不监督手部 joint_img/smplx_joint_img（soft-argmax 热图头的'
                              '唯一梯度源），切断对共享 hand_position_net 的梯度污染；'
@@ -207,6 +248,21 @@ def _configure_training_phase(trainer, phase, remaining_epochs):
         optim_params.append({'params': normal_params, 'lr': normal_lr, 'name': 'hand_face_new_modules'})
     if special_params:
         optim_params.append({'params': special_params, 'lr': special_lr, 'name': 'regressors'})
+
+    # Body-shape T1 (gated): shape_out/cam_out (requires_grad set in
+    # Model.freeze_modules) get their own optimizer group. No-op when the prefix
+    # list is empty, so the hand/face optimizer layout is unchanged.
+    body_shape_prefixes = getattr(core_model, 'body_shape_trainable_prefixes', [])
+    if body_shape_prefixes:
+        body_shape_params = [
+            p for n, p in core_model.named_parameters()
+            if p.requires_grad and any(n.startswith(pre) for pre in body_shape_prefixes)
+        ]
+        if body_shape_params:
+            optim_params.append({'params': body_shape_params,
+                                 'lr': getattr(cfg, 'body_shape_lr', 1e-5),
+                                 'name': 'body_shape'})
+
     if not optim_params:
         raise RuntimeError("No trainable parameters were selected for phase %d" % phase)
 
@@ -286,6 +342,18 @@ def main():
         cfg.interhand_max_samples = args.interhand_max_samples
     if args.bedlam_use_hand_roi_quality:
         cfg.bedlam_use_hand_roi_quality = True
+    if args.ubody_use_hand_roi_quality:
+        cfg.ubody_use_hand_roi_quality = True
+    if args.mscoco_use_hand_roi_quality:
+        cfg.mscoco_use_hand_roi_quality = True
+    if args.ubody_hand_roi_coverage_thr is not None:
+        cfg.ubody_hand_roi_coverage_thr = args.ubody_hand_roi_coverage_thr
+    if args.ubody_hand_roi_min_joints is not None:
+        cfg.ubody_hand_roi_min_joints = args.ubody_hand_roi_min_joints
+    if args.mscoco_hand_roi_coverage_thr is not None:
+        cfg.mscoco_hand_roi_coverage_thr = args.mscoco_hand_roi_coverage_thr
+    if args.mscoco_hand_roi_min_joints is not None:
+        cfg.mscoco_hand_roi_min_joints = args.mscoco_hand_roi_min_joints
     if args.bedlam_no_hand_img_loss:
         cfg.bedlam_supervise_hand_img = False
     if args.use_hand_rotmat_pose_loss:
@@ -294,6 +362,12 @@ def main():
         cfg.hand_rotmat_pose_loss_weight = args.hand_rotmat_pose_loss_weight
     if args.init_trained_path:
         cfg.init_trained_path = args.init_trained_path
+
+    # Body-shape T1 (gated). Must be set BEFORE Trainer()/_make_model builds the
+    # Model, which reads cfg.train_body_shape to populate the unfreeze prefixes.
+    if args.train_body_shape:
+        cfg.train_body_shape = True
+    cfg.body_shape_lr = args.body_shape_lr
 
     if args.continue_train and args.continue_train_path:
         cfg.continue_train_path = args.continue_train_path
@@ -375,7 +449,7 @@ def main():
                     torch.nn.utils.clip_grad_norm_(posnet_params, max_norm=cfg.posnet_grad_clip)
             if args.grad_clip > 0:
                 other_params = _grad_params_for_groups(
-                    trainer.optimizer, {'hand_face_new_modules', 'regressors'})
+                    trainer.optimizer, {'hand_face_new_modules', 'regressors', 'body_shape'})
                 if other_params:
                     torch.nn.utils.clip_grad_norm_(other_params, max_norm=args.grad_clip)
 
@@ -395,23 +469,37 @@ def main():
                     ),
                     '%.2fh/epoch' % (trainer.tot_timer.average_time / 3600. * trainer.itr_per_epoch),
                 ]
-                if 'is_interhand' in meta_info and 'is_bedlam' in meta_info:
+                source_masks = _source_masks(meta_info)
+                if source_masks is not None:
                     screen += [
-                        'batch_interhand: %.0f' % meta_info['is_interhand'].sum().detach().cpu().item(),
-                        'batch_bedlam: %.0f' % meta_info['is_bedlam'].sum().detach().cpu().item(),
+                        'batch_interhand: %.0f' % source_masks['interhand'].sum().detach().cpu().item(),
+                        'batch_bedlam: %.0f' % source_masks['bedlam'].sum().detach().cpu().item(),
                     ]
-                    if 'is_ubody' in meta_info:
-                        screen += ['batch_ubody: %.0f' % meta_info['is_ubody'].sum().detach().cpu().item()]
+                    if 'ubody' in source_masks:
+                        screen += ['batch_ubody: %.0f' % source_masks['ubody'].sum().detach().cpu().item()]
+                    screen += ['batch_mscoco: %.0f' % source_masks['mscoco'].sum().detach().cpu().item()]
                 screen += ['%s: %.4f' % ('loss_' + k.lstrip('_'), v.detach()) for k, v in loss.items()]
                 trainer.logger.info(' '.join(screen))
                 if per_source is not None:
-                    for src_name in ('interhand', 'bedlam', 'ubody'):
+                    for src_name in ('interhand', 'bedlam', 'ubody', 'mscoco'):
                         src_losses = per_source.get(src_name, {})
                         if src_losses:
                             line = ['  [%s]' % src_name] + [
                                 '%s: %.4f' % (k.lstrip('_'), val) for k, val in src_losses.items()
                             ]
                             trainer.logger.info(' '.join(line))
+
+            # ---- 中途保存（评估候选点）----
+            # save_iters>0 时每 N 个 iter 存一个 snapshot_{epoch}_itr{N}，与 epoch 末
+            # 快照分开命名、互不覆盖；定位为评估候选点（state['epoch'] 仍为当前 epoch，
+            # 故若拿来续训会从下一 epoch 起步，续训粒度仍是 epoch）。
+            if args.save_iters > 0 and (itr + 1) % args.save_iters == 0 \
+                    and (itr + 1) < trainer.itr_per_epoch:
+                trainer.save_model({
+                    'epoch': epoch,
+                    'network': trainer.model.state_dict(),
+                    'optimizer': trainer.optimizer.state_dict(),
+                }, '%d_itr%d' % (epoch, itr + 1))
 
             # ---- 首个 iteration 检查梯度流 ----
             if epoch == trainer.start_epoch and itr == 0:
@@ -457,6 +545,13 @@ def _check_gradient_flow(trainer):
     for name, param in trainer.model.named_parameters():
         clean_name = name.replace('module.', '', 1)
         module_name = clean_name.split('.')[0]
+
+        # Body-shape T1 (gated): whitelisted body_regressor sub-heads are trainable
+        # despite body_regressor being in frozen_modules. Skip them here so they are
+        # not flagged as "frozen module with grad". No-op when the prefix list is empty.
+        if any(clean_name.startswith(p)
+               for p in getattr(trainer.model.module, 'body_shape_trainable_prefixes', [])):
+            continue
 
         if module_name in trainer.model.module.frozen_modules:
             if param.grad is not None:

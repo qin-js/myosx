@@ -119,6 +119,16 @@ class Model(nn.Module):
                 if m is not self.hand_regressor
             ]
 
+        # Body-shape T1 (default OFF): name prefixes of the two decoupled linear
+        # heads inside the (otherwise frozen) body_regressor that we allow to
+        # train. Empty when cfg.train_body_shape is False -> all related logic in
+        # freeze_modules / _verify_freeze_status / save_model / optimizer is a
+        # no-op, so the hand/face path is byte-for-byte unchanged.
+        self.body_shape_trainable_prefixes = (
+            ['body_regressor.shape_out', 'body_regressor.cam_out']
+            if getattr(cfg, 'train_body_shape', False) else []
+        )
+
         self.training_phase = 1
 
     def set_training_phase(self, phase):
@@ -194,6 +204,20 @@ class Model(nn.Module):
             for param in module.parameters():
                 param.requires_grad = True
                 trainable_param_count += param.numel()
+
+        # Body-shape T1 (gated): re-enable grad on the whitelisted sub-heads of
+        # the otherwise-frozen body_regressor. BodyRotationNet has no BatchNorm,
+        # so leaving them in eval() is harmless. No-op when the prefix list is empty.
+        body_shape_param_count = 0
+        if self.body_shape_trainable_prefixes:
+            for name, param in self.named_parameters():
+                if any(name.startswith(p) for p in self.body_shape_trainable_prefixes):
+                    param.requires_grad = True
+                    body_shape_param_count += param.numel()
+                    frozen_param_count -= param.numel()
+                    trainable_param_count += param.numel()
+            print(f"  🔧 body-shape T1: 解冻 {body_shape_param_count:,} 参数 "
+                  f"({', '.join(self.body_shape_trainable_prefixes)})")
 
         print(f"\n{'=' * 60}")
         print(f"模块冻结完成:")
@@ -314,15 +338,17 @@ class Model(nn.Module):
         # camera translation
         t_xy = cam_param[:, :2]
         gamma = torch.sigmoid(cam_param[:, 2])  # apply sigmoid to make it positive
-        k_value = torch.FloatTensor([math.sqrt(cfg.focal[0] * cfg.focal[1] * cfg.camera_3d_size * cfg.camera_3d_size / (
-                cfg.input_body_shape[0] * cfg.input_body_shape[1]))]).cuda().view(-1)
+        k_value = cam_param.new_tensor([math.sqrt(
+            cfg.focal[0] * cfg.focal[1] * cfg.camera_3d_size * cfg.camera_3d_size /
+            (cfg.input_body_shape[0] * cfg.input_body_shape[1])
+        )]).view(-1)
         t_z = k_value * gamma
         cam_trans = torch.cat((t_xy, t_z[:, None]), 1)
         return cam_trans
 
     def get_coord(self, root_pose, body_pose, lhand_pose, rhand_pose, jaw_pose, shape, expr, cam_trans, mode):
         batch_size = root_pose.shape[0]
-        zero_pose = torch.zeros((1, 3)).float().cuda().repeat(batch_size, 1)  # eye poses
+        zero_pose = root_pose.new_zeros((batch_size, 3))  # eye poses
         output = self.smplx_layer(betas=shape, body_pose=body_pose, global_orient=root_pose, right_hand_pose=rhand_pose,
                                   left_hand_pose=lhand_pose, jaw_pose=jaw_pose, leye_pose=zero_pose,
                                   reye_pose=zero_pose, expression=expr)
@@ -379,19 +405,20 @@ class Model(nn.Module):
 
     def generate_mesh_gt(self, targets, mode):
         if 'smplx_mesh_cam' in targets:
-            return targets['smplx_mesh_cam']
+            return targets['smplx_mesh_cam'].to(next(self.parameters()).device)
         nums = [3, 63, 45, 45, 3]
         accu = []
         temp = 0
         for num in nums:
             temp += num
             accu.append(temp)
-        pose = targets['smplx_pose']
+        device = next(self.parameters()).device
+        pose = targets['smplx_pose'].to(device)
         root_pose, body_pose, lhand_pose, rhand_pose, jaw_pose = \
             pose[:, :accu[0]], pose[:, accu[0]:accu[1]], pose[:, accu[1]:accu[2]], pose[:, accu[2]:accu[3]], pose[:,accu[3]:accu[4]]
-        shape = targets['smplx_shape']
-        expr = targets['smplx_expr']
-        cam_trans = targets['smplx_cam_trans']
+        shape = targets['smplx_shape'].to(device)
+        expr = targets['smplx_expr'].to(device)
+        cam_trans = targets['smplx_cam_trans'].to(device)
 
         # final output
         joint_proj, joint_cam, mesh_cam = self.get_coord(root_pose, body_pose, lhand_pose, rhand_pose, jaw_pose, shape,
@@ -577,15 +604,58 @@ class Model(nn.Module):
             loss['face_bbox'] = (self.coord_loss(face_bbox_center, targets['face_bbox_center'], meta_info['face_bbox_valid'][:, None]) +
                                  self.coord_loss(face_bbox_size, targets['face_bbox_size'], meta_info['face_bbox_valid'][:, None]))
             # change hand target joint_img and joint_trunc according to hand bbox (cfg.output_hm_shape -> downsampled hand bbox space)
-            # Dynamic BEDLAM hand-ROI quality gate setup (applied per-coord below).
-            roi_gate_on = getattr(cfg, 'bedlam_use_hand_roi_quality', False)
+            # Dynamic hand-ROI quality gate setup (applied per-coord below).
+            roi_gate_on = (getattr(cfg, 'bedlam_use_hand_roi_quality', False) or
+                           getattr(cfg, 'ubody_use_hand_roi_quality', False) or
+                           getattr(cfg, 'mscoco_use_hand_roi_quality', False))
             if roi_gate_on:
-                roi_cov_thr = float(getattr(cfg, 'bedlam_hand_roi_coverage_thr', 0.6))
-                roi_min_joints = int(getattr(cfg, 'bedlam_hand_roi_min_joints', 8))
+                gate_source = lhand_bbox.new_zeros(lhand_bbox.shape[0])
+                gate_cov_thr = lhand_bbox.new_full((lhand_bbox.shape[0],), float('inf'))
+                gate_min_joints = lhand_bbox.new_full((lhand_bbox.shape[0],), float('inf'))
                 if 'is_bedlam' in meta_info:
                     is_bedlam = meta_info['is_bedlam'].to(lhand_bbox.device).view(-1).float()
-                else:
-                    is_bedlam = lhand_bbox.new_zeros(lhand_bbox.shape[0])
+                    if getattr(cfg, 'bedlam_use_hand_roi_quality', False):
+                        gate_source = torch.maximum(gate_source, is_bedlam)
+                        gate_cov_thr = torch.where(
+                            is_bedlam > 0,
+                            gate_cov_thr.new_full(gate_cov_thr.shape, float(getattr(cfg, 'bedlam_hand_roi_coverage_thr', 0.6))),
+                            gate_cov_thr,
+                        )
+                        gate_min_joints = torch.where(
+                            is_bedlam > 0,
+                            gate_min_joints.new_full(gate_min_joints.shape, float(getattr(cfg, 'bedlam_hand_roi_min_joints', 8))),
+                            gate_min_joints,
+                        )
+                if 'is_ubody' in meta_info:
+                    is_ubody = meta_info['is_ubody'].to(lhand_bbox.device).view(-1).float()
+                    if getattr(cfg, 'ubody_use_hand_roi_quality', False):
+                        gate_source = torch.maximum(gate_source, is_ubody)
+                        gate_cov_thr = torch.where(
+                            is_ubody > 0,
+                            gate_cov_thr.new_full(gate_cov_thr.shape, float(getattr(cfg, 'ubody_hand_roi_coverage_thr', 0.6))),
+                            gate_cov_thr,
+                        )
+                        gate_min_joints = torch.where(
+                            is_ubody > 0,
+                            gate_min_joints.new_full(gate_min_joints.shape, float(getattr(cfg, 'ubody_hand_roi_min_joints', 8))),
+                            gate_min_joints,
+                        )
+                if 'dataset_id' in meta_info:
+                    dataset_id = meta_info['dataset_id'].to(lhand_bbox.device).view(-1).float()
+                    is_mscoco = (dataset_id == 3).float()
+                    if getattr(cfg, 'mscoco_use_hand_roi_quality', False):
+                        gate_source = torch.maximum(gate_source, is_mscoco)
+                        gate_cov_thr = torch.where(
+                            is_mscoco > 0,
+                            gate_cov_thr.new_full(gate_cov_thr.shape, float(getattr(cfg, 'mscoco_hand_roi_coverage_thr', 0.6))),
+                            gate_cov_thr,
+                        )
+                        gate_min_joints = torch.where(
+                            is_mscoco > 0,
+                            gate_min_joints.new_full(gate_min_joints.shape, float(getattr(cfg, 'mscoco_hand_roi_min_joints', 8))),
+                            gate_min_joints,
+                        )
+                roi_gate_diag = {'coverage': [], 'ok': [], 'active': [], 'n_valid': []}
             for part_name, bbox, bbox_valid in (
                     ('lhand', lhand_bbox, lhand_bbox_safe_valid),
                     ('rhand', rhand_bbox, rhand_bbox_safe_valid)):
@@ -613,14 +683,21 @@ class Model(nn.Module):
                     # hand joints). Low coverage => box_net framed the wrong person
                     # => veto this hand's whole 2D trunc. Computed live so it matches
                     # train-time augmentation exactly (no flip/scale/rot mismatch).
-                    # BEDLAM-only; InterHand (GT bbox) and non-BEDLAM keep roi_ok=1.
+                    # Source-gated; InterHand (GT bbox) and disabled sources keep
+                    # roi_ok=1.
                     if roi_gate_on:
                         gate_valid = gt_valid & coord_finite
                         n_valid = gate_valid.sum(dim=1)
                         coverage = (gate_valid & in_bbox.bool()).sum(dim=1).float() / n_valid.clamp(min=1).float()
-                        roi_ok = ((bbox_valid > 0) & (n_valid >= roi_min_joints) & (coverage >= roi_cov_thr)).float()
-                        roi_ok = torch.where(is_bedlam > 0, roi_ok, torch.ones_like(roi_ok))
+                        roi_ok = ((bbox_valid > 0) &
+                                  (n_valid.float() >= gate_min_joints) &
+                                  (coverage >= gate_cov_thr)).float()
+                        roi_ok = torch.where(gate_source > 0, roi_ok, torch.ones_like(roi_ok))
                         trunc = trunc * roi_ok[:, None]
+                        roi_gate_diag['coverage'].append(coverage)
+                        roi_gate_diag['ok'].append(roi_ok)
+                        roi_gate_diag['active'].append(gate_source)
+                        roi_gate_diag['n_valid'].append(n_valid.float())
                     trunc = trunc[:, :, None]
                     targets[coord_name] = torch.cat((targets[coord_name][:, :smpl_x.joint_part[part_name][0], :], coord,
                                                      targets[coord_name][:, smpl_x.joint_part[part_name][-1] + 1:, :]),
@@ -707,6 +784,16 @@ class Model(nn.Module):
             smplx_joint_img_loss = self.coord_loss(joint_img, smpl_x.reduce_joint_set(targets['smplx_joint_img']),
                                                    smpl_x.reduce_joint_set(smplx_joint_trunc_img))
             loss['smplx_joint_img'] = smplx_joint_img_loss
+            if roi_gate_on:
+                coverage = torch.stack(roi_gate_diag['coverage'], dim=1)
+                roi_ok = torch.stack(roi_gate_diag['ok'], dim=1)
+                active = torch.stack(roi_gate_diag['active'], dim=1)
+                n_valid = torch.stack(roi_gate_diag['n_valid'], dim=1)
+                active_denom = active.sum(dim=1, keepdim=True).clamp(min=1.0)
+                loss['_hand_roi_gate_coverage'] = (coverage * active).sum(dim=1, keepdim=True) / active_denom
+                loss['_hand_roi_gate_pass'] = (roi_ok * active).sum(dim=1, keepdim=True) / active_denom
+                loss['_hand_roi_gate_active'] = active.mean(dim=1, keepdim=True)
+                loss['_hand_roi_gate_n_valid'] = (n_valid * active).sum(dim=1, keepdim=True) / active_denom
             # Diagnostics only (keys prefixed '_' are excluded from the backward
             # sum in train.py): split the joint_img / smplx_joint_img coord loss
             # into xy vs z so a depth-channel blow-up is visible per data source.

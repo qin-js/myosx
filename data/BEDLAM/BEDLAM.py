@@ -407,6 +407,7 @@ class BEDLAM(torch.utils.data.Dataset):
 
         dummy_center = np.zeros((2), dtype=np.float32)
         dummy_size = np.zeros((2), dtype=np.float32)
+        smplx_cam_trans = np.zeros((3), dtype=np.float32)
         joint_img = smplx_joint_img.copy()
         joint_cam = smplx_joint_cam.copy()
 
@@ -419,6 +420,7 @@ class BEDLAM(torch.utils.data.Dataset):
             "smplx_pose": smplx_pose,
             "smplx_shape": smplx_shape,
             "smplx_expr": smplx_expr,
+            "smplx_cam_trans": smplx_cam_trans,
             "smplx_mesh_cam": smplx_mesh_cam_orig,
             "lhand_bbox_center": dummy_center,
             "lhand_bbox_size": dummy_size,

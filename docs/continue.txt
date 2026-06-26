@@ -1,343 +1,165 @@
-# OSX 手部 + 面部微调交接记录（InterHand/BEDLAM 教手 · UBody 教脸）
+# OSX 微调交接摘要
 
-更新时间：2026-06-20。覆盖：手部微调（`interhand_bedlam_c`，**已完成+全量评估**）+ 面部微调（Stage 2，**准备就绪待跑**）。
+更新时间：2026-06-25
 
-**更新历史（简，详见对应章节）**：
-- 手部混训崩溃根因（BEDLAM 糊手 crop 污染共享 soft-argmax 热图头）→ **B 类修复**（切 BEDLAM 手部 img loss）。「一」「二」
-- **编码器 pos_embed bug**（EHF body 差 ~4mm 的根因）→ 修复，body 60.6→**56.5**≈OSX 56.66（提交 `73eeeea`，已 push）。「九」
-- 旧编码器上的 `_b` 作废 → `_c`（修好编码器 + 60:40 BEDLAM:InterHand）重训 → **已完成**。
-- **InterHand 手部基准**实现并接线（「十」）；官方 test 已下载、`_c` 全量评估完成（手 PA-MPJPE 16.82mm）。
-- **面部方案落地**（「十一」）：UBody 抽帧工具 + 阶段衔接开关（`--no_train_hand_modules`/`--init_trained_path`）+ `is_ubody` 三源对齐 + `tool/check_hand_frozen.py`。
-- **关键结论**：面部监督天然只落 UBody（BEDLAM/InterHand 无脸标注 → 自动 mask），故面部**无需**手部那种 B 类防崩门控。
+这个文件只保留重开会话时必须先看的信息。完整项目总览见
+`docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，旧长版交接记录已归档到
+`docs/archive/continue_2026-06-23_full.txt`。
 
-## 当前状态 / 重开先看这里
+## 当前结论
 
-**一句话**：手部阶段 `_c` 已训完 + 全量评估通过；**下一步 = Stage 2「冻手训脸」（UBody），准备已全部就绪**。
+- 手部阶段 `interhand_bedlam_c` 已完成，InterHand-test 全量对等结果为 **OSX normal 19.58mm → `_c` snapshot_8 16.82mm**，手部增益 **-2.76mm / -14%**。
+- 面部阶段 `face_ubody_e` 已完成，EHF Face 回到约 **6.20mm**，但原始 OSX 约 **6.09mm**，所以脸不是有效贡献点。
+- UBody 自然手 2D 评测已接入，当前 `test_sample_interval=10`，`fps=3` 抽帧后样本量足够做快速比较。
+- 最新 UBody 结果显示：微调后模型在自然手 2D 上低于原始 OSX；Stage 2 冻手训脸没有继续改变手，问题应来自更早的手部微调/decoder 路径。
+- UBody `[wa]` per-finger / per-level 诊断已完成（三档：OSX / `face_ubody_e` / `pretrained` 随机-ish 手头参照）。退化模式收敛：**沿指节深度递增、指根不动、tip 最差，整体接近随机-ish 手头的末端优先退化曲线**，我们处在 OSX→`pretrained` 退化区间 72%；该诊断已用于设计 Stage 3。
+- **Stage 3 `joint_polish_f` 已收口，终点定 `snapshot_2`**：InterHand PA **16.76mm**（-14% vs OSX 19.58，目前最好）/ wrist-rel 84.32mm；UBody 整手 `[wa]` NME 0.250→**0.229**（接近 OSX 0.219 但未追平，epoch 2 死平在 0.228-0.229=平台）；EHF Face 6.25mm（微退、噪声级）。Phase 2（epoch 2，lr~5e-7）本质 wash：InterHand 微降、EHF 微退、UBody 不动。已停训不跑 epoch 3。snap1 为"无退化"保守替代，与 snap2 实质等价。
 
-**手部成绩（`_c`，已定量；详见「十一」末尾结论表）**：
-- 手：InterHand-test PA-MPJPE **16.82mm**（全量 52033 手、L≈R）；**best = snapshot_8**（≈snapshot_10）。
-- 身体保持：EHF Body 56.66→**56.52**（≈OSX，编码器修复成立）。
-- ⚠️ 脸退化：EHF Face 6.09→**7.7**（pytorch 脸头随机没训）——正是 Stage 2 要修的。
-- 注：**EHF 测不出 InterHand 手增益**（EHF 手 15.97→15.7）→ 判手必须用 InterHand 手部基准。
+## 当前关键指标
 
-**下一步 = Stage 2 面部微调**（完整命令/监控/验证见「十一」）：
-- `config.py:27` 已切 `trainset_3d=['UBody']`；暖启 `snapshot_8`；`--train_face_modules --no_train_hand_modules`。
-- 准备状态全绿：✅UBody 抽帧(109k)+软链+`train_sample_interval=1`　✅smplx 标注齐　✅阶段开关　✅`model_core/base` 编译过。
-- 训完按「一变两不变」验证：EHF Face↓（目标 ≤6.09）/ EHF Body·Hand 不变 / `check_hand_frozen.py` 手部权重 Δ=0。
+InterHand26M test，全量 52033 hands：
 
-**关键 don'ts**：
-- ⚠️ **eval 绝不与训练并发同卡**——`_b` 即被这样 OOM。
-- `trainset_3d` 现为 `['UBody']`（Stage 2 专用）；回手部基线改回 `['BEDLAM','InterHand26M']`，Stage 3 三个都要。
-- 本仓库 sandbox **无 GPU**，训练/评估都要你在有 GPU 处自己跑。
+| 模型 | PA-MPJPE | wrist-rel MPJPE | 结论 |
+|---|---:|---:|---|
+| 原始 OSX `normal` | 19.58mm | 86.32mm | 对等 baseline |
+| `_c` snapshot_8 | 16.82mm | 84.58mm | 最佳 PA，手部贡献成立 |
+| `_c` snapshot_10 | 16.82mm | 84.11mm | PA 持平，wrist-rel 略低 |
+| `joint_polish_f` snapshot_0 | 16.85mm | 84.57mm | Stage 3 guardrail 通过 |
+| `joint_polish_f` snapshot_1 | 16.83mm | 84.29mm | 保守替代，无退化 |
+| **`joint_polish_f` snapshot_2** | **16.76mm** | 84.32mm | **Stage 3 终点**，InterHand 最好 |
 
-## 项目背景
+`wrist-rel` 仍在 84-87mm 高位，说明主要提升来自 PA 对齐后的相对手形/姿态；绝对手腕朝向/全局手系问题没有被这阶段训练彻底解决。后续 Stage 3 必须守住 InterHand PA，不要只看 UBody 自然手。
 
-仓库 `/workspace/myosx`，OSX 研究分支。目标：在冻结的 OSX 全身 backbone 上，用 InterHand26M+BEDLAM 微调**手部**、
-用 UBody 微调**面部**（jaw+expr），同时不破坏全身 SMPL-X 能力。训练走 `decoder_setting=pytorch` 路径（`main/model_core.py` 的 `Model`）。
+UBody natural-hand 2D，`output/eval_ubody` / `output/eval_joint_polish_f`：
 
-- 核心代码：`main/{train.py,model_core.py,config.py}`、`data/{InterHand26M,BEDLAM,UBody}/*.py`、
-  `common/nets/{loss.py,my_decoder.py,DCNv4.py,vit.py}`。
-- 角色分工：InterHand=只教手（hand-only，GT 框注入 ROI）；BEDLAM=全身 SMPL-X 排练+防遗忘；UBody=只教脸（脸嵌在全身图里）。
-- 子分支：手 `hand_position_net`(DCNv4 热图)→`hand_decoder`→`hand_regressor`；脸 `face_position_net`→`face_decoder`→`face_regressor`。
-  手脸模块**各自独立**；backbone(encoder/body/box_net/roi) 冻结。反传是整 batch 总 loss（分源只是日志拆分）。
+| 指标 | 原始 OSX | `face_ubody_e` | `joint_polish_f` snap1 | `joint_polish_f` snap2(终点) |
+|---|---:|---:|---:|---:|
+| Evaluated hands | 3446 | 3446 | 3446 | 3446 |
+| `[abs]` PCK@0.2 | 0.422 | 0.383 | 0.406 | 0.406 |
+| `[abs]` NME | 0.311 | 0.337 | 0.324 | 0.324 |
+| `[wa]` PCK@0.2 | 0.587 | 0.515 | 0.560 | 0.560 |
+| `[wa]` NME | 0.219 | 0.250 | 0.229 | 0.229 |
+| PA MPVPE Hands | 10.29mm | 10.28mm | 10.16mm | 10.11mm |
 
-## 一、核心问题与根因（已验证）
+伪 GT PA-MPJPE 仍不能反映自然手质量；判断自然手以真实 2D hand keypoint 的 `[abs]` / `[wa]` 为主。Stage 3 验证了 UBody 自然手监督 + predicted ROI + mixed data 这个组合配方有效，但还没有单独隔离“GT 框注入/crop 分布差”这一单因子。
 
-**症状**：混训到 `epoch2 itr~429`（全局 itr ~5825），`loss_joint_img` / `loss_smplx_joint_img`
-从 ~0.8 **一步跳到 3+ 并永久卡住**（750+ itr 不恢复），InterHand 与 BEDLAM 一起崩。
-其余 loss 全程稳定 → 是塌进退化盆地，不是抖动，也不是单个坏 batch。
+这里的“原始 OSX”来自 `output/eval_ubody/result/UBody_result.txt`：top-level eval 使用
+`--decoder_setting normal` 且没有 `--continue_train_path`；snapshot 子目录使用 `pytorch` 两步加载
+`face_ubody_e` checkpoint。当前 per-finger 结果目录里有 snapshot_0/4；snapshot_8 由冻结手权重等价推断。`result/pretrained/` 是 pytorch 映射预训练分支，保留未覆盖随机-ish 手头，用作退化参照而非严格下界。
 
-**分源日志（itr1129，决定性证据）**：
+per-level `[wa]` NME（退化沿指节深度递增，Stage 3 主要回收 j3/tip）：
 
-| loss | [interhand] | [bedlam] | |
-|---|---|---|---|
-| joint_img / smplx_joint_img | 2.22 | **4.38** | ✅ 崩 |
-| joint_proj | 0.16 | 0.25 | 稳 |
-| joint_cam / smplx_joint_cam | 0.007 | 0.024 | 稳 |
-| smplx_pose | 0.068 | 0.19 | 稳 |
+| level | OSX | `face_ubody_e` | `joint_polish_f` snap1 | `pretrained` | snap1-OSX |
+|---|---:|---:|---:|---:|---:|
+| j1 指根 | 0.205 | 0.208 | 0.206 | 0.207 | +0.001 |
+| j2 | 0.221 | 0.236 | 0.225 | 0.241 | +0.004 |
+| j3 | 0.231 | 0.270 | 0.242 | 0.286 | +0.011 |
+| tip 指尖 | 0.263 | 0.337 | 0.287 | 0.367 | +0.024 |
 
-**根因**：`hand_position_net` 的 soft-argmax 热图输出 `hand_joint_img`，在 `model_core.py:487`
-（传 decoder 前）和 `:492`（传 regressor 前）都被 `.detach()`，**唯一未 detach 的去处**是 `:517`
-拼进 `joint_img` → `loss['joint_img']`(`:640`) / `loss['smplx_joint_img']`(`:645`)。
-即**这两项是热图头的唯一梯度源**。日志现象 = 代码链路：只有它俩崩 ⇒ 热图头被这两项拖崩。
-BEDLAM(4.4) 是更重的污染源；因共享同一手部分支、反传整 batch 总 loss，BEDLAM 把共享参数推偏后
-InterHand 也跟着崩。
+tip/j1 放大比：OSX 1.28 → `face_ubody_e` 1.62 → `joint_polish_f` snapshot_1 1.39 → `pretrained` 1.77。结论：退化主要是整体末端能力下降，Stage 3 已把末端斜率显著拉回，但仍略差于原始 OSX。
 
-**毒源机制**：热图头吃的是 `img_feat`(1024,16,12) 上的 ROI crop。BEDLAM 全身图里手只占
-~1 个特征像素，crop 出来是糊的、无手部结构 → 让 soft-argmax 在 16×16×16 网格上定位 21 个关节
-属**病态回归** → 高方差非泛化梯度累积，把共享热图头推进退化盆地（L1 soft-argmax 进去就回不来）。
-InterHand（GT 框、手占满画面）有真实结构，单独训不崩。
-注：动态 coverage 门控判的是「关节是否在框内」，**框对但很小**的 BEDLAM 手能过门控、
-特征仍是糊的，所以门控拦不住这个问题。
+注意：已核对 `smpl_x.orig_hand_regressor` 与 UBody GT 手关键点顺序，二者都是
+`wrist, thumb, index, middle, ring, pinky`。不要用 `human_models.py` 里的旧
+`orig_joints_name` 解码 `J_regressor` 行号，它对 SMPL-X 22+ 行有误导。
 
-## 二、已落地的修复：B 类·精确版
+## 已实现：UBody `[wa]` Per-Finger 诊断
 
-**思路**：对 BEDLAM 样本，只把**手部** `joint_img` / `smplx_joint_img` 监督置零
-（切断热图头唯一的毒梯度通路），其余全保留。热图头之后只被 InterHand（干净）监督。
+`data/UBody/UBody.py` 的 `evaluate()` / `print_eval_result()` 已新增 `[wa-finger]`（thumb/index/middle/ring/pinky）和 `[wa-level]`（j1/j2/j3/tip）NME + 有效计数 N。wrist 只对齐一次，归一化用整手 GT bbox diagonal，`vf.sum()>=2` 才统计；并加了 UBody hand order 显式校验。
 
-**代码改动（3 文件；开关默认 True = 旧行为，零影响其它训练）**：
+**判读口径（下次看 per-finger 结果必读）**：per-finger/per-level 是各自可见子集上的均值，每组进入统计的手不同，**不要用五指 NME 简单平均去对账整手 `[wa]` NME**；横向比手指也要同时看 `N`（tip/j1 的 N 会因指尖常遮挡而明显小于指根，属预期）。最适合看同一根手指/同一 level 的 OSX vs 我们 delta。
 
-- `main/config.py`：新增 `bedlam_supervise_hand_img = True`。
-- `main/model_core.py`（loss 段 ~639-647）：当 `bedlam_supervise_hand_img=False` 且 meta 有
-  `is_bedlam` 时，构造「BEDLAM 手部置零」的 trunc 副本 `joint_trunc_img` / `smplx_joint_trunc_img`，
-  **仅**喂给 `joint_img` / `smplx_joint_img`；`joint_proj` 仍用原 coverage-gated `joint_trunc`。
-  实现 `keep = 1 - is_bedlam * hand_joint_mask` 广播相乘（避免链式索引赋值）。
-- `main/train.py`：新增 CLI `--bedlam_no_hand_img_loss` → 置 `cfg.bedlam_supervise_hand_img=False`。
+## 下一步：身体 shape 小实验 T1（Stage 3 已收口）
 
-**保留了什么**：BEDLAM 仍经特征通路（`:489` query_init 未 detach）→ decoder → regressor
-贡献**稳定**梯度；`smplx_pose`(含手指姿态)、`smplx_joint_cam`(手 3D)、`joint_cam`、
-BEDLAM 手部 `joint_proj` 全在。BEDLAM 价值几乎无损。
+Stage 3 `joint_polish_f` 已结束，终点 `snapshot_2`（决策与三件套对照见 `docs/experiment_log.md` 2026-06-25）。结论：手部基准稳固（InterHand 16.76 / -14%），自然手回收到 `[wa]` 0.229（接近 OSX 0.219、未追平、已到平台），身体/脸平价。**不再继续 Stage 3 训练**（epoch 2 确认平台、规则 3 的 `[wa]≤0.225` 远未达到）。
 
-**已验证**：`py_compile` 三文件通过；mask 算术单测通过（BEDLAM 手关节→0、BEDLAM body 保留、
-InterHand 全保留）；并在 `_b`/`_c` 上坐实越过 epoch2-itr429 崩点（见「三」「九」「当前状态」）。
+下一步是 **`body_shape_t1`**（代码已实现，默认关闭、对手/脸零影响）：只解冻 `body_regressor.shape_out`+`cam_out`、BEDLAM-only shape 监督，修体型 betas mean-reversion。完整配方 / 启动命令 / 影响分析见 `docs/experiment_log.md` 2026-06-25 的 T1 条目。启动前置：`config.py` 改 `trainset_3d=['BEDLAM'], trainset_2d=[]`，填 `--init_trained_path`（用 `joint_polish_f/snapshot_2`）。等 GPU 空闲再起。
 
-## 三、B 类验证（已通过，历史）
+**Stage 3 历史配方（已完成，留档）**：暖启 `face_ubody_e snapshot_4`（`--init_trained_path` 新开 run），lr 5e-5 / `posnet_lr_mult=0.5` / `phase1_epochs=2` / `end_epoch=4`；`trainset_3d=['BEDLAM','InterHand26M','UBody']`（prob 0.20/0.35/0.45）；UBody 用 box_net 预测框、开 `--ubody_use_hand_roi_quality`；`--bedlam_no_hand_img_loss --bedlam_use_hand_roi_quality`。
 
-B 类修复已在 `_b`（旧编码器）上**坐实有效**：原始 lr=2e-4 + 全量数据平稳越过 epoch2-itr429 崩点（A 类在此永久崩）。
-方法学教训（保留）：**验证必须用原始 lr + 全量数据跑过崩点**；早期 `diag_zsplit`（cap=4096 + lr 砍半）没到崩点，"没崩"是假阴性。
-（`_b` 因编码器 bug 作废；`_c` 在修好编码器上重训并已完成——见「九」「当前状态」。）
+**已废弃的 Stage 3 决策规则**（平台已确认，留作记录）：曾约定「`[wa]` 仍 0.228-0.229 则停训、在 snap1/2 选终点」「`[wa]≤0.225` 才再加 epoch」——实际 epoch 2 死平在 0.228-0.229，已据此停训并选 snapshot_2。
 
-## 四、已实现的关键能力（累计）
+## UBody Annotation Cache
 
-1. InterHand26M + BEDLAM 混训；加权采样 `trainset_3d_sample_prob`（BEDLAM 0.6 / InterHand 0.4），
-   per-worker numpy/random 解相关播种。
-2. BEDLAM flat_hand_mean 兼容：`bedlam_convert_flat_hand_mean=True`，初始化取一次 hand mean、
-   每条记录减去（含双转换 guard）。
-3. InterHand 掩码：hand-only，per-hand wrist-relative 3D，`L/R_Wrist` 3D-cam valid=0，
-   仅 15+15 指关节 pose-valid，shape/expr/face valid=0。
-4. GT 手框注入 ROI：`inject_gt_hand_bbox=True`，对 `is_hand_only` 样本用 GT 框做 ROI crop
-   （绕过冻结 box_net 在 InterHand 上的退化全图框）；box_net 预测保留给 bbox loss。
-5. 动态 BEDLAM hand-ROI 门控：`bedlam_use_hand_roi_quality`，按当前增广后的预测框现场算 coverage，
-   低于阈值否决该手 2D loss。阈值 `coverage_thr=0.6 / min_joints=8`。
-6. 分源日志：按 `is_interhand/is_bedlam` 拆分打印 `[interhand]`/`[bedlam]`。
-7. xy/z 拆分诊断：`_joint_img_xy/_z`、`_smplx_joint_img_xy/_z`（`_` 前缀项不进反传）。
-8. NaN guard：`total_loss` 非 finite 时 backward 前停并打印组成；`CoordLoss/ParamLoss` 做 `nan_to_num`。
-9. A 类稳定化：`posnet_lr_mult=0.25`、`posnet_grad_clip=0.5`，`hand_position_net` 独立分组
-   （lr 5e-5）+ 独立紧裁剪。三分组 `position_nets / hand_face_new_modules / regressors`。
-10. 两阶段：`phase1_epochs=10`，Phase1 训 hand_position_net+decoder+regressor，Phase2 降 lr。
-11. optimizer resume 修复：暂存—延迟恢复，仅当 checkpoint 同 phase 才 `load_state_dict`
-    （跨 phase 分组不同会 mismatch）。
-12. 每 epoch 可视化面板：InterHand 手 crop+点 / BEDLAM mesh，输出 `output/<exp>/vis/epoch_panel/`。
-13. rotation-matrix hand pose loss（**实现，默认关**）：`RotMatParamLoss`（`common/nets/loss.py`，
-    axis-angle→rotmat masked L1），在 `model_core` 接成**附加的、仅 30 个手指关节**项，由
-    `cfg.use_hand_rotmat_pose_loss` / CLI `--use_hand_rotmat_pose_loss`(+`--hand_rotmat_pose_loss_weight`)
-    控制。默认关 = 零影响；开启后手指为 axis-angle+rotmat 双重监督。详见 `code_changes_review.md` §12.1。
-14. 加载健壮性 + 内存：`InterHand26M.py` 不再常驻原始 COCO/joint/MANO 标注（load 完即释放，
-    修掉 OOM 隐患，这是 InterHand loader 大段 diff 的原因）；InterHand 与 BEDLAM 的
-    `__getitem__` 都加了"坏图→有界重采另一条 datalist 样本"兜底（个别损坏/解不开的图不再让 worker 崩；
-    成片损坏会有界抛错而非死循环）。BEDLAM 走 `.pkl` 路径，加载时只查 `osp.isfile` 不解码，
-    所以坏图要靠这个运行时兜底。
+推荐使用按抽帧图片过滤后的 pkl：
 
-## 五、走过的弯路 / 已证伪的假设（别重复）
-
-1. **「z 单独爆」假设——错**。最早以为是 soft-argmax 深度 bin 翻转、只需屏蔽/降权 z_img。
-   实测 epoch2 分源显示 **xy 和 z 一起爆**（xy 常比 z 还大）。不要再做「只处理 z」。
-2. **A 类（降 posnet lr + 紧裁剪）不足以治本**。只把崩点从 epoch1-itr1900 推迟到 epoch2-itr429，
-   没切断毒梯度。保留 A 类当便宜保险即可。
-3. **「冻结 hand_position_net 只训 decoder+regressor」——当前不可行**。pytorch 路径的
-   `hand_position_net` 是 `DCNv4PositionNet`（`model_core.py:757`），**从头随机初始化**
-   （`base.py:361-364` 显式跳过加载，`model_core.py:816-818` 对它 init）。冻结随机热图头 =
-   `joint_img` 永远降不下来、decoder 拿随机 init 坐标。只有先把它训好（curriculum 阶段 A）
-   再冻结才合法。
-4. **静态 npz hand-ROI 门控——已废弃**（见 `bedlam_problems.txt`）。静态文件在固定视角算、
-   训练却随机 flip/scale/rot，必然 mismatch。已改为动态门控。
-
-## 六、已知遗留问题
-
-- InterHand loader 个别 joint 投影非 finite，loss 层已兜底；更干净是在
-  `data/InterHand26M/InterHand26M.py` 把非 finite 对应 valid/trunc 置 0。
-- 数据完整性：本会话 InterHand + BEDLAM 都出现过个别坏图（已被坏图兜底，不崩）。若坏图成片
-  （下载/同步未完成），等于有效样本变少 + 重采有偏，建议单独扫一遍两数据集图片可读性确认。
-
-（已解决，备忘）
-- `test.py` 50-batch 硬限制 → 现由 `--max_eval_iters N` 控制（默认 <=0 = 评估整个 testset）。
-- 临时文件 `main/_tmp_pg_test.py` + 根目录 `core.*` 已在 dev 分支删除，`core.*` 已入 `.gitignore`。
-- `Tester`/`Demoer` 的 `module.` 前缀 load 0 张量问题已由 `_load_lightweight_trained_modules`
-  （`base.py`，带/不带前缀都试）解决；本会话又加了 `loaded==0 → 报错` 保护。详见
-  `code_changes_review.md` §12.1。
-
-## 七、历史 run / snapshot 索引
-
-- `output/interhand_bedlam_c`：**手部主 run，已完成 + 全量评估**（修好编码器 + 60:40 + `--posnet_lr_mult 1.0`）。
-  **best = snapshot_8**（手 16.82mm 全量、L≈R），身体保持、脸待 Stage 2。后续面部 run：`face_ubody_e`(Stage 2)、`joint_polish_f`(可选 Stage 3)。
-- `output/interhand_bedlam_b`：B 类·精确版，在**旧（错）编码器**上训，epoch6 因评估抢 GPU 被 OOM 停。
-  **已验证 B 类有效**（越过 epoch2-itr429 崩点），但因编码器 bug **手/脸头作废**，不要再用其 snapshot。
-- `output/interhand_bedlam`：第一次崩（epoch1 后段）。`snapshot_1` 是崩后权重，**不要续训**。
-- `output/interhand_bedlam_a`：A 类全量 run，epoch2-itr429 崩（已停，进程已不在）。日志保留作对照。
-- `output/diag_zsplit`：lr=1e-4 + cap=4096 短跑，没到崩点（假阴性），仅用于看健康态 xy/z 模式。
-
-## 八、下一步
-
-1. **面部微调（当前主线）**：按「十一」三阶段——Stage 2「冻手训脸」(UBody) 是主菜，Stage 3 联合收尾可选。准备已就绪（见「当前状态」）。
-2. 手部已完成（`_c` best snapshot_8、全量 16.82mm；「十」「十一」）。如需再提手：Stage 3 用 UBody 真实手做低-lr 精修。
-3. 可选实验：`--use_hand_rotmat_pose_loss`（手指 axis-angle+rotmat 双监督，与不开做 A/B）。
-4. 可选定稿：补跑**原始 OSX 全量** InterHand，得"全量口径"的 orig→best 提升幅度（现仅 partial 18.47）。
-
-## 九、编码器 pos_embed bug（已修复，根因 + 证据）
-
-`StandardViT`（pytorch 路径编码器，纯 PyTorch 重写）的位置编码用法和 OSX 的 MMCV ViT 不一致，
-是 EHF body 比 OSX 差 ~4mm（PA MPJPE Body 60.6 vs 56.7）的根因——**不是微调问题**。
-
-- OSX ViT（`transformer_utils/.../backbones/vit.py:312-319`）：
-  `p = p + pos_embed[:,1:] + pos_embed[:,:1]`（每个 patch 加 patch_pos + 单个全局 cls_pos），
-  再 `cat((task_tokens, p))`——**task token 不加任何 pos**。
-- StandardViT（修复前）：先 `cat((task,patch))` 再整体 `+ pos_embed`（loader 把 pos 拼成
-  `[cls×31, patch×192]`）→ **patch 漏了 cls_pos、task token 反而多加 cls_pos**。
-
-冻结的 OSX 预训练 body/box net 期望 OSX 编码器特征，被扰动后 body 退化；其余（attention 数学、
-qkv/proj key、block、last_norm→norm）都对得上，所以 body 只偏几 mm 而非崩坏。
-
-修复（提交 `73eeeea`，已 push）：
-- `common/nets/vit.py`：`pos_embed` 形状改回 `(1, num_patches+1, C)`；forward 复刻 OSX
-  （patch 加 `pos_embed[:,1:]+pos_embed[:,:1]`，task token 拼在后面不加 pos）。
-- `common/base.py`：两个 loader 删掉 193→223 扩充，直接按形状加载。
-- 验证：EHF `PA MPJPE (Body)` 60.57→**56.53**（OSX 56.66），确认生效。
-
-影响：编码器特征改变 → 旧编码器上训的手/脸头（`_b`）作废 → 必须重训（`_c`）。
-
-## 十、InterHand 手部评估（已实现，本次更新）
-
-补上 docs 一直要的「手部基准」。`InterHand26M.evaluate()` 之前是空 stub，现已实现；`--testset InterHand26M`
-可直接跑。改 3 文件（`data/InterHand26M/InterHand26M.py`、`main/test.py`、`main/config.py`；`common/base.py` 未动）。
-
-**指标**：InterHand 无 GT SMPL-X mesh，故从**预测 mesh** 用 `smpl_x.orig_hand_regressor` 回归 21 手关节，
-与 datalist 的 GT `joint_cam` 比。每手出 **PA-MPJPE**（Procrustes，镜像 EHF）+ **wrist-relative MPJPE**，
-左右手分开 + 合并；单手帧按腕有效性门控跳过（不计 0）。返回 dict-of-lists（test.py 跨 batch 拼接）。
-
-**核心正确性点 = 关节顺序**：预测侧（orig_hand_regressor）= 腕在前、每指 base→tip；GT 侧（joint_set）=
-指 tip→base、腕在最后。代码用**按名置换** `_build_hand_perm()` 对齐（错序 → PA 飙到几百 mm）。已静态验证
-`perm=[20,3,2,1,0,7,6,5,4,11,10,9,8,15,14,13,12,19,18,17,16]`、21 元全排列、复现 PRED 序。单位：GT mm→m、×1000 回 mm。
-
-**identity 增广 / annot_split 旋钮**：评估必须 identity 增广（否则随机 flip 会左右手互换、毁掉指标）。
-新增 `cfg.interhand_eval_split`（默认 `test`，CLI `--interhand_eval_split`）只控制**读哪个 split 的标注文件**，
-`data_split` 仍为 `test` → 增广恒 identity。训练侧（`data_split="train"`）行为完全不变。
-
-**命令**（⚠️ 别和训练抢 GPU，`_b` 即此被 OOM）：
 ```bash
-cd main && python test.py --gpu 0 --testset InterHand26M \
-    --interhand_eval_split train --decoder_setting pytorch --encoder_setting osx_l \
-    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-    --continue_train_path ../output/interhand_bedlam_c/model_dump/snapshot_<N>.pth.tar \
-    --test_batch_size 16 --max_eval_iters 20
+cd /workspace/myosx
+python tool/UBody/filter_annotations_by_images.py \
+  --data_root dataset/UBody \
+  --output_root dataset/UBody/annotations_filtered \
+  --pkl_only \
+  --overwrite
+export UBODY_ANNOTATION_DIR=dataset/UBody/annotations_filtered
 ```
-合理输出：`PA MPJPE (Hands)` ~5–15mm、L≈R、评估手数>0；`>50mm` ⇒ 怀疑置换/单位。负对照：perm 换 identity → 几百 mm。
 
-**两类数据来源**：
-- `--interhand_eval_split test`：**官方 test 已下载、全量评估已完成** → `_c` best snapshot_8 = **16.82mm PA**（52033 手、L≈R）。这是泛化成绩。
-- `--interhand_eval_split train`：污染上界（`_c` 训过），仅用于验证代码 / 看趋势；不是泛化成绩。
-- ⚠️ partial（`--max_eval_iters` 截断）偏乐观、且可能只评到单手（曾 `L:0`）——**定稿请去掉 `--max_eval_iters` 跑全量**。
-- 防泄漏 held-out 开关：未做（对已训完的 `_c` 无意义）。
+当前已确认：
 
-## 十一、面部微调（UBody，三阶段课程；本次更新落地）
+- `dataset/UBody/annotations_filtered` 下 15 个 scene 的 pkl 都带 `_ubody_orig_ann_order`。
+- Movie train 路径：原始 JSON 与 filtered pkl datalist 逐样本一致。
+- Olympic test 路径：原始 JSON 与 filtered pkl datalist 逐样本一致。
 
-**目标**：在 `_c` 手部基础上加面部（jaw + expression）。**为什么必须用 UBody**：当前训练集
-（InterHand=无脸、BEDLAM=脸极小且无面部关键点）都不支持面部——`process_human_model_output`
-（`preprocessing.py:240-249`）对 `face_valid=False` 的样本把 `expr_valid`、jaw 的 `pose_valid`、
-face 的 `joint_trunc` 全部置零。所以 `smplx_expr` / jaw / `joint_img_face` 三个面部 loss 在
-BEDLAM/InterHand 上**自动为零**，**只在 UBody 上生效**。
+如果重新抽帧、改 images、改原始 annotation，必须重跑上面的 filter cache。
 
-**关键结论（决定方案简单度）**：
-- 面部**不需要**手部那种 B 类防崩门控——毒源（小脸）在 BEDLAM 上本就没有面部标注、自动 mask，
-  不像手（BEDLAM 有手关节但 crop 糊）会污染共享热图头。
-- `face_position_net`（`DCNv4PositionNet('face')`）和手一样是**随机初始化**（`base.py:365` 跳过加载）→
-  必须有 UBody 的 68 面部关键点 2D 监督才能学；BEDLAM/InterHand 给不了。
-- 冻结的 `box_net` 当年在 UBody 上训过 → 对 UBody 能框出像样人脸框 → face ROI crop 是干净真脸。
-- `CoordLoss`（`loss.py:15-17`）在 `is_3D=False`（UBody）时仍保留 xy、只 mask 掉 z；face decoder 也只用
-  xy（`model_core.py:509-510`）→ 面部热图头在 UBody 上能正常训（深度不监督，无害）。
+## 常用训练命令
 
-**数据准备（已完成）**：`tool/UBody/video2image_subsample.py` 抽帧（默认 `--fps 3 --format jpg`，
-stride=round(30/fps)，**按真实 30fps 1-based 帧号命名**故抽多抽少都不与标注错位；jpg 内容写进 `.png`
-名，loader 用 cv2.imread 按内容解码 → 体积省 ~5-10×）。已抽 15 场景 ~109k 帧（~8GB），软链
-`dataset/UBody -> /workspace/UBody`，`cfg.train_sample_interval=1`（抽帧已稀疏化，loader 不能再按 10 抽，
-否则两间隔相乘可能把样本砍到近 0）。UBody 全量 ~1.07M 帧；fps=3≈复刻原配方 `train_sample_interval=10` 的有效量。
+Stage 3 联合 polish（修末端自然手泛化；先短跑 2-4 epoch，别直接 12）。与 `main/train.sh` 活动命令一致：
 
-**新增代码（默认零影响，`train_hand_modules=True` 时行为不变）**：
-- `--train_hand_modules`(默认 True)/`--no_train_hand_modules`：False 时把手部三件套移入 `frozen_modules`
-  （无梯度 + BN eval），**但名字保留在 `trainable_module_names`** → snapshot 仍存手权重供下阶段暖启。
-- `--init_trained_path`：非续训(`continue_train=False`)时暖加载某 lightweight snapshot 的手/脸张量
-  （**不续 epoch/optimizer**），复用现成的 `_load_lightweight_trained_modules`。这是阶段衔接关键
-  （`--continue_train` 会把 epoch 续到末尾，做不到"只借权重重新开训"）。
-- `is_ubody` **三源对齐** + 分源日志：UBody 已带 `is_ubody=True`；**InterHand/BEDLAM 也补了 `is_ubody=False`**
-  （否则 Stage 3 混批时默认 collate 按 batch[0] 的 key，在缺 `is_ubody` 的样本上 KeyError）。`train.py` 的
-  `_per_source_losses`/打印/NaN 守卫都接了 ubody → Stage 2 看 `[ubody]`、Stage 3 看 `[interhand]/[bedlam]/[ubody]`。
-- 改动文件：`config.py`(默认值)、`train.py`(args + `_configure_training_phase` 手部门控 + ubody 日志)、
-  `model_core.py`(`__init__` 冻手 + `set_training_phase` 门控 `hand_regressor`)、`base.py`(暖加载)、
-  `data/{InterHand26M,BEDLAM}.py`(补 `is_ubody=False`)；新增 `tool/check_hand_frozen.py`(离线冻结检查)。
-- 安全性：`_verify_freeze_status`/`_check_gradient_flow` 都「先判 frozen 再判 trainable」，故手部同时在
-  `frozen_modules` 和 `trainable_module_names` 两个列表里是安全的（按冻结校验）。
-
-**三阶段（⚠️ 每阶段都要 GPU 空，别和别的并发——OOM 老教训）**：
-- **Stage 1**：训完 `_c`（手）。
-- **Stage 2 = 冻手训脸（主菜）**　`config: trainset_3d=['UBody']`
-  ```bash
-  cd main && python train.py --gpu_ids 0 --lr 2e-4 --lr_mult 0.1 \
-    --train_batch_size 64 --num_thread 8 --end_epoch 12 --phase1_epochs 8 \
-    --exp_name output/face_ubody_e --decoder_setting pytorch --encoder_setting osx_l --grad_clip 1.0 \
-    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-    --init_trained_path ../output/interhand_bedlam_c/model_dump/snapshot_<best>.pth.tar \
-    --train_face_modules --no_train_hand_modules --posnet_lr_mult 1.0
-  ```
-  `_c` 的手分毫不动，脸用全 phase-1 lr 在 UBody 上学。盯 `[ubody]` 的 `joint_img_face`/`smplx_expr` 降；
-  若 `joint_img_face` 早期跳，把 `--posnet_lr_mult` 降到 0.5。
-- **Stage 3（可选，低-lr 联合收尾）**　`config: trainset_3d=['BEDLAM','InterHand26M','UBody']` +
-  `trainset_3d_sample_prob={'BEDLAM':0.4,'InterHand26M':0.3,'UBody':0.3}`
-  ```bash
-  cd main && python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
-    --train_batch_size 64 --num_thread 8 --end_epoch 6 --phase1_epochs 3 \
-    --exp_name output/joint_polish_f --decoder_setting pytorch --encoder_setting osx_l --grad_clip 1.0 \
-    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-    --init_trained_path ../output/face_ubody_e/model_dump/snapshot_<best>.pth.tar \
-    --bedlam_use_hand_roi_quality --bedlam_no_hand_img_loss --train_face_modules --posnet_lr_mult 0.5
-  ```
-  **注意：Stage 3 对脸是边际收益**——手脸模块独立 + 骨干冻结、几乎无梯度耦合，脸永远只从 UBody 学
-  （和 Stage 2 同源）。Stage 3 真正价值只有「用 UBody 真手再精修手 + 统一收尾」，且解冻手会让 `_c` 的手
-  漂移。**Stage 2 后若手脸都满意，可不做 Stage 3。**
-
-**评估（已现成，无需改代码）**：EHF 的 `evaluate()` 已算 **PA-MPVPE(Face)/MPVPE(Face)**（`face_vertex_idx`）：
 ```bash
-cd main && python test.py --gpu 0 --testset EHF --decoder_setting pytorch --encoder_setting osx_l \
-    --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-    --continue_train_path ../output/face_ubody_e/model_dump/snapshot_<N>.pth.tar
+cd /workspace/myosx/main
+export UBODY_ANNOTATION_DIR=/workspace/myosx/dataset/UBody/annotations_filtered
+python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
+  --train_batch_size 64 --num_thread 8 --end_epoch 4 --phase1_epochs 2 \
+  --exp_name output/joint_polish_f --decoder_setting pytorch --encoder_setting osx_l --grad_clip 1.0 \
+  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+  --init_trained_path ../output/face_ubody_e/model_dump/snapshot_4.pth.tar \
+  --train_face_modules --posnet_lr_mult 0.5 \
+  --bedlam_use_hand_roi_quality --bedlam_no_hand_img_loss \
+  --ubody_use_hand_roi_quality --save_iters 1280
 ```
-看 `PA-MPVPE (Face)` 是否降；Stage 2 因手冻结，EHF body/hand 应≈`_c`；再跑 InterHand 手部基准确认手没退。
 
-**`_c` 评估结论（epochs 0–10，已定量；top-level=原始 OSX 基线，snapshot_N=`_c` 第 N epoch）**：
+`--save_iters 1280`（新增，可选）：每 ~1/3 epoch 在中途存 `snapshot_{epoch}_itr1280/2560.pth.tar` 作为评估候选点，与 epoch 末快照分开命名、互不覆盖（每个 ~399M）。中途快照定位为评估点，续训仍以 epoch 为粒度。`0`/不传＝关闭。
 
-| | InterHand-test 手 PA-MPJPE | EHF Body | EHF 手 PA-MPVPE | EHF Face |
-|---|---|---|---|---|
-| 原始 OSX | 18.47（partial 800 右手；全量未跑） | 56.66 | 15.97 | **6.09** |
-| `_c` snapshot_8 ≈ snapshot_10 | **16.82**（全量 52033 手, L≈R） | 56.52 | ~15.7 | 7.7+ |
+前置（必须改 `config.py`，CLI 不覆盖数据集选择）：`trainset_3d=['BEDLAM','InterHand26M','UBody']` 且 `trainset_3d_sample_prob={'BEDLAM':0.20,'InterHand26M':0.35,'UBody':0.45}`（不补 UBody 概率会报 Missing sample probabilities）。UBody ROI gate 阈值走 `config.py` 默认 0.6/8（诊断起点）；正式跑前先 `--end_epoch 1` 短跑看 `[ubody] hand_roi_gate_coverage/pass/n_valid` 校准，再按需改 config.py。Stage 3 前确认 UBody 用 box_net 预测框、不注入 GT 框。
 
-- ✅ **手部学到了**：同一 partial 子集上 orig 18.47→`_c` 13.77（-25%）证明有提升；**全量定稿 = 16.82mm PA**
-  （52033 手；partial 的 13.8 只是前几 batch 的易子集、偏乐观）。**best = snapshot_8**（≈snapshot_10，全量 PA 相同），ep8 后已收敛、不必跑到 14。
-  注 **EHF 手几乎不动**（15.97→15.7）→ 坐实"必须用手部基准、EHF 测不出 InterHand 手增益"。
-- ✅ **左手正常**：全量 L 16.81 ≈ R 16.83（各 ~26k 手）；partial 的 `L:0` 只是 `--max_eval_iters` 截断，非 bug。
-- ✅ **身体保持** 56.66→56.52（冻骨干 + 编码器修复都成立）；⚠️ **脸退化** 6.09→7.7（pytorch 脸头随机没训）→ Stage 2 要修。
-- 想要"全量口径"的 orig→best 提升幅度，再跑一次**原始 OSX 全量**（现仅 partial 18.47）。
-- wrist-rel ~84mm 偏大但 **PA 才是标准指标**：差距=全局手腕朝向（InterHand 未监督绝对朝向 + 预测在虚拟相机系），非手部模块缺陷。
+## 常用评估命令
 
-**Stage 2 验证协议 = "一变两不变"（受控实验，训完做、别和训练并发）**：
+原始 OSX UBody：
 
-| 量 | 期望 | 怎么查 |
-|---|---|---|
-| EHF **Face** | **↓**（目标 ≤6.09） | 逐 epoch 跑 `test.py --testset EHF`（post-hoc 扫 snapshot，**别塞进训练循环**→OOM） |
-| EHF Body/Hand | 不变（56.52 / ~15.7） | 同上一并出 |
-| **手部权重** | **Δ=0** | `tool/check_hand_frozen.py`（纯 CPU 读两个 ckpt 比 `hand_*` 张量；秒出） |
+```bash
+cd /workspace/myosx/main
+python test.py --gpu 0 --testset UBody --exp_name output/eval_ubody \
+  --decoder_setting normal --encoder_setting osx_l \
+  --pretrained_model_path ../pretrained_models/osx_l.pth.tar
+```
 
-- **手冻结用权重 diff 直接证**，无需重跑 InterHand：权重相等 ⇒ 前向相等 ⇒ 手部指标必然不变。
-  ```bash
-  python tool/check_hand_frozen.py \
-    --ref  output/interhand_bedlam_c/model_dump/snapshot_8.pth.tar \
-    --ckpt output/face_ubody_e/model_dump/snapshot_<best>.pth.tar --also_face
-  ```
-  期望 **HAND 全 Δ=0 + FACE Δ>0**；HAND Δ>0/MISSING → 冻结或保存有 bug（脚本 exit 1）。自检：ref 比自己→全 Δ=0；
-  比 `_c` 不同 epoch（如 snap8 vs snap4）→ HAND 应报 changed（证明能认出变化）。
-- EHF 逐 epoch：训练每 epoch 存 ckpt，训完用 shell 循环对每个 snapshot 跑 EHF（同评 `_c` 的套路），选 Face 最低、
-  且 Body/Hand 不退的那个。
+Stage 3 snapshot UBody：
 
-## 参考文档
+```bash
+cd /workspace/myosx/main
+export UBODY_ANNOTATION_DIR=/workspace/myosx/dataset/UBody/annotations_filtered
+python test.py --gpu 0 --testset UBody --exp_name output/eval_joint_polish_f \
+  --decoder_setting pytorch --encoder_setting osx_l \
+  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_1.pth.tar
+```
 
-- `docs/interhand_bedlam_training_plan.md`
-- `docs/bedlam_smplx_compatibility.md`
-- `docs/bedlam_problems.txt`
-- `docs/interhand_bedlam_code_changes_review.md`
+Stage 3 snapshot InterHand 全量：
+
+```bash
+cd /workspace/myosx/main
+python test.py --gpu 0 --testset InterHand26M \
+  --decoder_setting pytorch --encoder_setting osx_l \
+  --interhand_eval_split test --max_eval_iters -1 \
+  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+  --exp_name output/eval_joint_polish_f \
+  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_1.pth.tar
+```
+
+## 文档入口
+
+- `docs/post_stage3_roadmap.md`：**Stage 3 之后的路线与决策（in-the-wild hand 主线）**——候选路线、当前选择（加 COCO-WholeBody）、概率评估、pilot 与决策门。前瞻性主文档，下一步先看它。
+- `docs/project_overview.md`：当前项目状态、关键结论、推荐下一步。
+- `docs/experiment_log.md`：按时间追加的实验日志。
+- `docs/archive/continue_2026-06-23_full.txt`：旧长版交接记录，保留历史细节。
+- `docs/interhand_bedlam_training_plan.md`：早期训练计划。
+- `docs/bedlam_smplx_compatibility.md`、`docs/bedlam_problems.txt`：BEDLAM 兼容与问题记录。

@@ -1,0 +1,104 @@
+# 项目总览
+
+更新时间：2026-06-25
+
+## 项目目标
+
+本仓库是 OSX 的研究分支，目标是在尽量不破坏原始 OSX 全身能力的前提下，探索手部与面部微调：
+
+- InterHand26M：提供高质量手部监督。
+- BEDLAM：原计划提供全身 SMPL-X 正则与防遗忘，但在当前 frozen backbone/body 设置下实际价值有限。
+- UBody：提供自然图里的手/脸上下文，是当前判断自然手泛化的关键数据。
+
+当前战略已经收敛：**脸不是贡献点，真正需要解决的是手部微调后自然图手质量低于原始 OSX 的问题。**
+
+## 当前模型阶段
+
+| 阶段 | 实验 | 状态 | 结论 |
+|---|---|---|---|
+| 手部微调 | `interhand_bedlam_c` | 已完成 | InterHand-test 全量 OSX 19.58mm → `_c` 16.82mm |
+| 面部微调 | `face_ubody_e` | 已完成 | EHF Face 回到约 6.20mm，但未超过原始 OSX |
+| 自然手评测 | `output/eval_ubody` | 三档 per-finger 完成 | 微调后自然手 2D 低于 OSX；退化沿指节递增、集中在 tip/j3，接近 `pretrained` 随机-ish 手头参照 |
+| Stage 3 | `joint_polish_f` | 已收口，终点 `snapshot_2` | InterHand PA 16.76（-14% vs OSX），UBody `[wa]` 0.250→0.229（接近 OSX 0.219、未追平、确认平台），EHF Face 6.25；epoch 2(Phase 2) 本质 wash，已停训不跑 epoch 3 |
+| 身体定性（shape） | `body_shape_t1` | 代码已实现·待跑 | 诊断＝betas mean-reversion（投影/朝向 OK）；T1 解冻 `shape_out`+`cam_out`，gated 默认关闭、对手/脸零影响，详见 `experiment_log.md` 2026-06-25 |
+
+## 关键结果
+
+### InterHand
+
+- `interhand_bedlam_c` best 约 `snapshot_8/10`。
+- InterHand-test 全量 52033 hands：
+
+| 模型 | PA-MPJPE | wrist-rel MPJPE |
+|---|---:|---:|
+| 原始 OSX `normal` | 19.58mm | 86.32mm |
+| `_c` snapshot_8 | 16.82mm | 84.58mm |
+| `_c` snapshot_10 | 16.82mm | 84.11mm |
+| `joint_polish_f` snapshot_0 | 16.85mm | 84.57mm |
+| `joint_polish_f` snapshot_1 | 16.83mm | 84.29mm |
+| `joint_polish_f` snapshot_2（终点） | **16.76mm** | 84.32mm |
+
+- 手部增益：19.58 → 16.82mm，**-2.76mm / -14%**。旧 18.47 partial 口径已废弃。
+- wrist-rel 仍在 84-87mm 高位，说明绝对手腕朝向/全局手系问题没有被这阶段训练彻底解决。
+
+### EHF
+
+- 原始 OSX Face PA-MPVPE 约 **6.09mm**。
+- `face_ubody_e` snapshot4+ Face PA-MPVPE 约 **6.20mm**。
+- 结论：面部阶段恢复了 pytorch face head，但没有形成对 OSX 的提升。
+
+### UBody Natural Hand 2D
+
+`test_sample_interval=10`，评测手数 3446：
+
+| 指标 | 原始 OSX | `face_ubody_e` | `joint_polish_f` snap0 | `joint_polish_f` snap1 |
+|---|---:|---:|---:|---:|
+| `[abs]` PCK@0.2 | 0.422 | 0.383 | 0.405 | 0.406 |
+| `[abs]` NME | 0.311 | 0.337 | 0.324 | 0.324 |
+| `[wa]` PCK@0.2 | 0.587 | 0.515 | 0.560 | 0.560 |
+| `[wa]` NME | 0.219 | 0.250 | 0.229 | 0.229 |
+
+结论：伪 GT 手部 PA-MPJPE 看不出问题，但真实 2D 手关键点显示自然手退化。Stage 3 已大幅回收旧退化，但仍略差于原始 OSX，且 snapshot_0→snapshot_1 的 UBody 指标基本平台。
+
+per-level `[wa]` NME 三档（`pretrained`=pytorch 映射预训练分支/随机-ish 手头参照）：
+
+| level | OSX | 我们 | `pretrained` | 我们-OSX | 区间位置 |
+|---|---:|---:|---:|---:|---:|
+| j1 指根 | 0.205 | 0.208 | 0.207 | +0.003 | ~噪声 |
+| j2 | 0.221 | 0.236 | 0.241 | +0.015 | 75% |
+| j3 | 0.231 | 0.270 | 0.286 | +0.039 | 71% |
+| tip 指尖 | 0.263 | 0.337 | 0.367 | +0.074 | 71% |
+
+整手 `[wa]` NME 区间位置 72%（OSX 0.219 → 我们 0.250 → `pretrained` 0.262）。退化沿指节深度递增、指根不动、tip 最差，且接近随机-ish 手头的末端优先曲线。详见 `docs/experiment_log.md` 2026-06-24 条目。
+
+Stage 3 snapshot_1 的 per-level `[wa]` NME 为 j1 0.206 / j2 0.225 / j3 0.242 / tip 0.287，tip/j1 放大比 1.39；相比旧 `face_ubody_e` 的 tip 0.337 与 tip/j1 1.62，主要修复确实发生在末端。
+
+## 当前判断
+
+- UBody 上的脸不是贡献点，因为 OSX 本来就在 UBody 域内，微调最多恢复而非超越。
+- BEDLAM 在当前 frozen encoder/body/box 设置下没有发挥原本的全身 GT mesh 价值；还引入了小手/遮挡噪声工程成本。
+- 手部 benchmark 增益与自然图泛化存在冲突。Stage 3 的 UBody 自然手监督 + predicted ROI + mixed data 组合配方有效，但单独的根因变量尚未隔离；下一步应控制训练长度，按 guardrail 选点。
+
+## 推荐下一步
+
+Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`（决策与 snapshot_2 三件套对照见 `docs/experiment_log.md` 2026-06-25）。手部基准稳固（InterHand 16.76 / -14%），自然手回收到 `[wa]` 0.229（接近 OSX 0.219、未追平、确认平台），身体/脸平价。**不再继续 Stage 3 训练**。
+
+下一步主线：**路线 B——加 COCO-WholeBody 真实 2D 修野外手泛化**（目标：InterHand 不退的同时野外手超 OSX；先低成本 pilot + HInt held-out 测"数据受限 vs 特征受限"，再决定是否叠路线 C 解冻 hand_roi_net）。完整路线/概率/决策门见 `docs/post_stage3_roadmap.md`。
+
+次要/附带：**`body_shape_t1`**（代码已实现，默认关闭、对手/脸零影响）——配图级，不当主线。手部线 in-domain 打磨到此为止；wrist-rel 需架构改动、列为高风险 stretch；不碰解冻 body/encoder；不再继续 face-only。
+
+## 身体定性观感（独立小实验，已立项·代码已实现）
+
+目标是真实图上身体 mesh 定性观感优于 OSX。诊断（demo 定性核对）：**投影/全局朝向基本 OK，真问题是体型 betas 系统性偏「软/厚」、抓不住精瘦体格（mean-reversion），即「轮廓缺陷」的真身**；复杂姿势（深蹲换胎）的大误差属 articulated pose，被冻结 backbone 卡死、数据不覆盖、且要在 OSX 最强项以少胜多，**不作为入口**。
+
+采用 **T1**：解冻 `body_regressor.shape_out` ＋ `cam_out`（两个解耦线性头），BEDLAM-only shape 监督（屏蔽 UBody 伪 GT betas），极小 LR；双口径验证（BEDLAM/AGORA shape 量化 ＋ demo 重渲染）。注意 `cam_out` 同时利好绝对手位 2D（wrist-rel / UBody `[abs]` 的瓶颈本就在冻结身体 cam+pose）。需子模块级解冻 ＋ 更新 `_verify_freeze_status`。完整配方/架构依据/预期管理见 `docs/experiment_log.md` 2026-06-25 条目。
+
+预期：动得了合成口径 shape，真实图轮廓改善不确定、可能有限；定性目标软，务必挂量化兜底。
+
+## 文档维护规则
+
+- `docs/post_stage3_roadmap.md`：**Stage 3 之后的前瞻路线/决策**（in-the-wild hand 主线、候选路线、当前选择=加 COCO-WholeBody、pilot 与决策门）。规划方向时更新这里。
+- `docs/continue.txt`：只放重开会话需要的短 handoff。
+- `docs/project_overview.md`：每次战略判断改变时更新。
+- `docs/experiment_log.md`：每次训练/评估完成后追加一条。
+- 长推理、旧 bug 过程、历史命令放入 `docs/archive/`，不要继续堆进 `continue.txt`。

@@ -147,13 +147,23 @@ def parse_args():
     parser.add_argument('--test_batch_size', type=int, default=16 )
     parser.add_argument('--encoder_setting', type=str, default='osx_l', choices=['osx_b', 'osx_l'])
     parser.add_argument('--decoder_setting', type=str, default='wo_face_decoder', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
-    parser.add_argument('--testset', type=str, default='EHF', choices=['EHF', 'HAA500', 'InterHand26M'])
+    parser.add_argument('--testset', type=str, default='EHF', choices=['EHF', 'HAA500', 'InterHand26M', 'UBody', 'HInt'])
     parser.add_argument('--interhand_eval_split', type=str, default='test', choices=['train', 'val', 'test'],
                         help='InterHand26M: which annotation split to load for eval (files only; '
                              'augmentation stays identity). "train" = contaminated upper bound '
                              'when the eval model trained on train.')
     parser.add_argument('--agora_benchmark', action='store_true')
     parser.add_argument('--debug_vis', action='store_true')
+    parser.add_argument('--hint_root', type=str, default='/workspace/HInt_annotation_partial',
+                        help='HInt root folder. Defaults to HINT_ROOT, then dataset/HInt/HInt_annotation(_partial).')
+    parser.add_argument('--hint_split', type=str, default='test', choices=['train', 'val', 'test', 'TRAIN', 'VAL', 'TEST'],
+                        help='HInt split folders to evaluate. Default: test.')
+    parser.add_argument('--hint_sources', type=str, default='epick,newdays',
+                        help='Comma-separated HInt source filter matched against folder names, e.g. epick,newdays.')
+    parser.add_argument('--hint_max_samples', type=int, default=None,
+                        help='Cap HInt loaded hand instances for quick checks.')
+    parser.add_argument('--hint_sample_interval', type=int, default=None,
+                        help='Subsample HInt json files by this interval.')
     parser.add_argument('--pretrained_model_path', type=str, default='../pretrained_models/osx_l_wo_face_decoder.pth.tar')
     parser.add_argument('--continue_train_path', type=str, default="")
     parser.add_argument('--continue_train_paths', type=str, nargs='+', default=None,
@@ -331,6 +341,14 @@ def main():
                             agora_benchmark=args.agora_benchmark,
                             testset=args.testset,
                             )
+    hint_kwargs = {}
+    for name in ('hint_root', 'hint_split', 'hint_sources',
+                 'hint_max_samples', 'hint_sample_interval'):
+        value = getattr(args, name)
+        if value is not None:
+            hint_kwargs[name] = value
+    if hint_kwargs:
+        cfg.set_additional_args(**hint_kwargs)
     cfg.interhand_eval_split = args.interhand_eval_split
     cudnn.benchmark = True
     from common.base import Tester
