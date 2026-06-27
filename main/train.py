@@ -128,6 +128,11 @@ def parse_args():
                              '（box_net 仍冻结）；默认关闭，关闭时对现有训练零影响')
     parser.add_argument('--hand_roi_lr', type=float, default=1e-6,
                         help='hand_roi_net 的学习率（仅 --train_hand_roi 时生效，建议 1e-6~5e-6）')
+    parser.add_argument('--hand_tip_loss_weight', type=float, default=1.0,
+                        help='末端 2D loss 加权：手指尖(_4)在 hand-space 2D loss(joint_proj/joint_img/'
+                             'smplx_joint_img)的权重；默认 1.0=关闭')
+    parser.add_argument('--hand_j3_loss_weight', type=float, default=1.0,
+                        help='手指 j3(_3)在 hand-space 2D loss 的权重；默认 1.0=关闭')
     parser.add_argument('--train_face_modules', action='store_true',
                         help='默认冻结 face 分支；需要 UBody face/expression 微调时显式开启')
     parser.add_argument('--no_train_hand_modules', action='store_true',
@@ -392,6 +397,11 @@ def main():
     if args.train_hand_roi:
         cfg.train_hand_roi = True
     cfg.hand_roi_lr = args.hand_roi_lr
+
+    # End-tip 2D loss weighting (gated). Must be set BEFORE _make_model: the Model
+    # reads these in __init__ to build the per-joint weight buffers.
+    cfg.hand_tip_loss_weight = args.hand_tip_loss_weight
+    cfg.hand_j3_loss_weight = args.hand_j3_loss_weight
 
     if args.continue_train and args.continue_train_path:
         cfg.continue_train_path = args.continue_train_path

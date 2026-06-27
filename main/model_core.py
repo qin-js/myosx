@@ -145,6 +145,32 @@ class Model(nn.Module):
             if getattr(cfg, 'train_body_shape', False) else []
         )
 
+        # End-tip 2D loss weighting (default OFF, no-op when both = 1.0). UBody
+        # natural-hand degradation concentrates at the distal joints (tip=_4,
+        # then j3=_3); these per-joint multipliers up-weight them in the three
+        # hand-space 2D losses (joint_proj / joint_img / smplx_joint_img). Built
+        # for the full (joint_num) and reduced/pos (pos_joint_num) joint sets;
+        # name-based so non-finger joints always keep weight 1.0.
+        _tip_w = float(getattr(cfg, 'hand_tip_loss_weight', 1.0))
+        _j3_w = float(getattr(cfg, 'hand_j3_loss_weight', 1.0))
+        if _tip_w != 1.0 or _j3_w != 1.0:
+            def _mk_hand_w(n, names, hand_part):
+                w = torch.ones(n)
+                for j in hand_part:
+                    nm = names[j]
+                    if nm.endswith('_4'):
+                        w[j] = _tip_w
+                    elif nm.endswith('_3'):
+                        w[j] = _j3_w
+                return w
+            self.register_buffer('hand_loss_weight_full',
+                                 _mk_hand_w(smpl_x.joint_num, smpl_x.joints_name, smpl_x.joint_part['hand']))
+            self.register_buffer('hand_loss_weight_pos',
+                                 _mk_hand_w(smpl_x.pos_joint_num, smpl_x.pos_joints_name, smpl_x.pos_joint_part['hand']))
+        else:
+            self.hand_loss_weight_full = None
+            self.hand_loss_weight_pos = None
+
         self.training_phase = 1
 
     def set_training_phase(self, phase):
@@ -800,6 +826,14 @@ class Model(nn.Module):
             smplx_joint_img_loss = self.coord_loss(joint_img, smpl_x.reduce_joint_set(targets['smplx_joint_img']),
                                                    smpl_x.reduce_joint_set(smplx_joint_trunc_img))
             loss['smplx_joint_img'] = smplx_joint_img_loss
+            # End-tip 2D loss weighting (gated): boost distal hand joints in the
+            # three hand-space 2D losses. No-op when the buffers are None. The
+            # diagnostic _joint_img_* below slice the unweighted joint_img_loss /
+            # smplx_joint_img_loss locals, so monitoring stays on raw values.
+            if self.hand_loss_weight_full is not None:
+                loss['joint_proj'] = loss['joint_proj'] * self.hand_loss_weight_full.view(1, -1, 1)
+                loss['joint_img'] = loss['joint_img'] * self.hand_loss_weight_pos.view(1, -1, 1)
+                loss['smplx_joint_img'] = loss['smplx_joint_img'] * self.hand_loss_weight_pos.view(1, -1, 1)
             if roi_gate_on:
                 coverage = torch.stack(roi_gate_diag['coverage'], dim=1)
                 roi_ok = torch.stack(roi_gate_diag['ok'], dim=1)

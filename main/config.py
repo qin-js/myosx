@@ -156,6 +156,12 @@ class Config:
     # unchanged. See docs/post_stage3_roadmap.md route C.
     train_hand_roi = False
     hand_roi_lr = 1e-6
+    # End-tip 2D loss weighting (default 1.0 = OFF). Up-weight distal hand joints
+    # (tip=_4, j3=_3) in the hand-space 2D losses (joint_proj/joint_img/
+    # smplx_joint_img); targets the UBody natural-hand fingertip degradation
+    # (tip/j3 are the worst per docs). 1.0/1.0 -> byte-for-byte unchanged.
+    hand_tip_loss_weight = 1.0
+    hand_j3_loss_weight = 1.0
     # Optional warm-start (only consulted when continue_train is False): load the
     # trained hand/face tensors from a lightweight snapshot WITHOUT resuming the
     # epoch counter or optimizer state. Used to chain training stages
