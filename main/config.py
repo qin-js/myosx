@@ -146,6 +146,16 @@ class Config:
     # False every related branch is a no-op (prefixes empty) — hand/face
     # training is byte-for-byte unchanged. See docs/experiment_log.md 2026-06-25.
     train_body_shape = False
+    # Route C micro-experiment gate (default OFF). When True, hand_roi_net (the
+    # feature-level hand crop+upsample, normally part of the frozen backbone) is
+    # moved into the trainable set so it can co-adapt with the hand
+    # decoder/regressor at a small lr (hand_roi_lr). Targets the UBody
+    # full-body natural-hand gap: tests whether it is a predicted-box crop-
+    # distribution mismatch (fixable here) vs. a frozen-feature ceiling (not).
+    # box_net stays frozen on purpose. No-op when False -> byte-for-byte
+    # unchanged. See docs/post_stage3_roadmap.md route C.
+    train_hand_roi = False
+    hand_roi_lr = 1e-6
     # Optional warm-start (only consulted when continue_train is False): load the
     # trained hand/face tensors from a lightweight snapshot WITHOUT resuming the
     # epoch counter or optimizer state. Used to chain training stages

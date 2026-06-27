@@ -123,6 +123,11 @@ def parse_args():
                              '默认关闭，关闭时对手/脸训练零影响')
     parser.add_argument('--body_shape_lr', type=float, default=1e-5,
                         help='body-shape T1 的 shape_out/cam_out 学习率（仅 --train_body_shape 时生效）')
+    parser.add_argument('--train_hand_roi', action='store_true',
+                        help='路线 C：解冻 hand_roi_net，与 hand decoder/regressor 小 LR 共适应'
+                             '（box_net 仍冻结）；默认关闭，关闭时对现有训练零影响')
+    parser.add_argument('--hand_roi_lr', type=float, default=1e-6,
+                        help='hand_roi_net 的学习率（仅 --train_hand_roi 时生效，建议 1e-6~5e-6）')
     parser.add_argument('--train_face_modules', action='store_true',
                         help='默认冻结 face 分支；需要 UBody face/expression 微调时显式开启')
     parser.add_argument('--no_train_hand_modules', action='store_true',
@@ -204,6 +209,10 @@ def _configure_training_phase(trainer, phase, remaining_epochs):
         'face_decoder',
         'face_regressor',
     ]
+    # Route C (gated): hand_roi_net joins the managed set so it is reset/toggled
+    # like the others and gets its own small-lr optimizer group below.
+    hand_roi_modules = ['hand_roi_net'] if getattr(cfg, 'train_hand_roi', False) else []
+    candidate_modules = candidate_modules + hand_roi_modules
 
     # hand_position_net is split into its own optimizer group at a reduced lr
     # (A-class stabilization): it is the soft-argmax module that diverges
@@ -234,7 +243,7 @@ def _configure_training_phase(trainer, phase, remaining_epochs):
         normal_modules.append('face_decoder')
         special_modules.append('face_regressor')
 
-    trainable_modules = posnet_modules + normal_modules + special_modules
+    trainable_modules = posnet_modules + normal_modules + special_modules + hand_roi_modules
     _set_module_trainable(core_model, candidate_modules, False)
     _set_module_trainable(core_model, trainable_modules, True)
 
@@ -262,6 +271,15 @@ def _configure_training_phase(trainer, phase, remaining_epochs):
             optim_params.append({'params': body_shape_params,
                                  'lr': getattr(cfg, 'body_shape_lr', 1e-5),
                                  'name': 'body_shape'})
+
+    # Route C (gated): hand_roi_net co-adapts at its own small lr (cfg.hand_roi_lr).
+    # _set_module_trainable above already re-enabled its grads. No-op when off.
+    if hand_roi_modules:
+        hand_roi_params = _collect_module_params(core_model, hand_roi_modules)
+        if hand_roi_params:
+            optim_params.append({'params': hand_roi_params,
+                                 'lr': getattr(cfg, 'hand_roi_lr', 1e-6),
+                                 'name': 'hand_roi'})
 
     if not optim_params:
         raise RuntimeError("No trainable parameters were selected for phase %d" % phase)
@@ -369,6 +387,12 @@ def main():
         cfg.train_body_shape = True
     cfg.body_shape_lr = args.body_shape_lr
 
+    # Route C (gated). Must be set BEFORE _make_model builds the Model, which
+    # reads cfg.train_hand_roi to move hand_roi_net into the trainable lists.
+    if args.train_hand_roi:
+        cfg.train_hand_roi = True
+    cfg.hand_roi_lr = args.hand_roi_lr
+
     if args.continue_train and args.continue_train_path:
         cfg.continue_train_path = args.continue_train_path
 
@@ -449,7 +473,7 @@ def main():
                     torch.nn.utils.clip_grad_norm_(posnet_params, max_norm=cfg.posnet_grad_clip)
             if args.grad_clip > 0:
                 other_params = _grad_params_for_groups(
-                    trainer.optimizer, {'hand_face_new_modules', 'regressors', 'body_shape'})
+                    trainer.optimizer, {'hand_face_new_modules', 'regressors', 'body_shape', 'hand_roi'})
                 if other_params:
                     torch.nn.utils.clip_grad_norm_(other_params, max_norm=args.grad_clip)
 

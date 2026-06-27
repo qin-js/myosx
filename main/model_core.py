@@ -119,6 +119,22 @@ class Model(nn.Module):
                 if m is not self.hand_regressor
             ]
 
+        # Route C (default OFF): unfreeze hand_roi_net so the feature-level hand
+        # crop+upsample can co-adapt with the hand decoder/regressor (small lr,
+        # set in train.py). Moving the whole module from frozen_modules into the
+        # trainable lists is sufficient: freeze_modules() / train() / save_model /
+        # _verify_freeze_status / _check_gradient_flow all key off these lists, so
+        # the two-step checkpoint stays intact (the frozen-backbone load warm-
+        # inits hand_roi_net, then the lightweight overlay restores the trained
+        # weights). box_net is intentionally left frozen (it relocates the crop,
+        # a far harsher perturbation; staged separately). No-op when False.
+        if getattr(cfg, 'train_hand_roi', False):
+            self.frozen_modules = [m for m in self.frozen_modules if m != 'hand_roi_net']
+            if self.hand_roi_net not in self.trainable_modules:
+                self.trainable_modules = self.trainable_modules + [self.hand_roi_net]
+            if 'hand_roi_net' not in self.trainable_module_names:
+                self.trainable_module_names = self.trainable_module_names + ['hand_roi_net']
+
         # Body-shape T1 (default OFF): name prefixes of the two decoupled linear
         # heads inside the (otherwise frozen) body_regressor that we allow to
         # train. Empty when cfg.train_body_shape is False -> all related logic in
