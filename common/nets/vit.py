@@ -316,9 +316,11 @@ class Attention(nn.Module):
 class Block(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
+        # eps=1e-6 to match OSX ViT (norm_layer = partial(nn.LayerNorm, eps=1e-6));
+        # the nn.LayerNorm default is 1e-5.
+        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        self.norm2 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=nn.GELU, drop=drop)
 
     def forward(self, x):
@@ -334,7 +336,14 @@ class PatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.grid_size = (img_size[0] // patch_size, img_size[1] // patch_size)
         self.num_patches = self.grid_size[0] * self.grid_size[1]
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        # padding=2 matches OSX's ViT PatchEmbed: transformer_utils ViT uses
+        # Conv2d(..., padding = 4 + 2*(ratio//2 - 1)) which is 2 at ratio=1
+        # (the osx_l config). The previous default (padding=0) produced the SAME
+        # (16,12) grid but convolved every patch over a 2px-shifted, unpadded
+        # window -> ~24% img_feat divergence vs the MMCV ViT that the frozen OSX
+        # body/box/ROI weights expect. Shapes matched either way, so it stayed
+        # invisible until the encoder-fidelity probe (tool/analysis/encoder_compare).
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, padding=2)
 
     def forward(self, x):
         x = self.proj(x)
@@ -360,7 +369,7 @@ class StandardViT(nn.Module):
             Block(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias)
             for _ in range(depth)
         ])
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)  # match OSX ViT last_norm (eps=1e-6)
         self.grid_size = self.patch_embed.grid_size
 
         nn.init.trunc_normal_(self.pos_embed, std=.02)
