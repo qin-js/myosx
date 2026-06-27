@@ -10,6 +10,40 @@ import os
 import logging
 from glob import glob
 
+
+def _save_bootstrap_npz(path, eval_result):
+    """Dump each per-sample / per-hand metric list as a 1D float array for
+    offline bootstrap CI. Non-numeric or ragged keys are skipped. Safe no-op
+    when nothing usable is present."""
+    arrs = {}
+    for k, v in eval_result.items():
+        try:
+            a = np.asarray(v, dtype=np.float64)
+        except (ValueError, TypeError):
+            continue
+        if a.ndim == 1 and a.size > 0:
+            arrs[k] = a
+    if arrs:
+        np.savez(path, **arrs)
+        print(f"[dump] bootstrap arrays -> {path}  ({len(arrs)} keys)")
+
+
+def _save_crosspath_npz(path, records):
+    """Dump per-sample frozen-body params (+ bb2img_trans alignment anchor) for
+    the OSX-normal vs pytorch cross-path comparison. No-op when empty."""
+    arrs = {}
+    for k, v in records.items():
+        if len(v) == 0:
+            continue
+        try:
+            arrs[k] = np.stack([np.asarray(x, dtype=np.float64) for x in v], axis=0)
+        except (ValueError, TypeError):
+            continue
+    if arrs:
+        np.savez(path, **arrs)
+        print(f"[dump] crosspath arrays -> {path}  (N={next(iter(arrs.values())).shape[0]})")
+
+
 def visualize_debug(inputs, targets, meta_info, save_dir='debug_vis', sample_idx=0):
     """
     可视化调试函数：将 keypoint 和 mesh 投影到原图
@@ -171,6 +205,10 @@ def parse_args():
                              '每个 checkpoint 的结果会保存到 result/<checkpoint_name>/')
     parser.add_argument('--max_eval_iters', type=int, default=-1,
                         help='只评估前 N 个 batch（快速查看用）；<=0 表示评估整个 testset')
+    parser.add_argument('--dump_analysis', action='store_true',
+                        help='额外 dump 逐样本/逐手指标到 result_dir 下的 '
+                             'bootstrap_<testset>.npz 与 crosspath_<testset>.npz，'
+                             '供 tool/analysis/ 做 bootstrap CI 与跨路径校验；默认关闭、不改变评测行为')
     args = parser.parse_args()
 
     if not args.gpu_ids:
@@ -280,6 +318,10 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
     eval_result = {}
     cur_sample_idx = 0
     debug_vis_done = False  # 只可视化第一个 batch
+    dump_on = getattr(args, 'dump_analysis', False)
+    cp_keys = ('smplx_root_pose', 'smplx_body_pose', 'smplx_shape',
+               'cam_trans', 'bb2img_trans')
+    cp_records = {k: [] for k in cp_keys}
     if args.max_eval_iters > 0:
         print(f"[eval] 限制只跑前 {args.max_eval_iters} 个 batch（部分评估，指标仅供快速参考）")
     
@@ -307,6 +349,14 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
         for k, v in out.items(): batch_size = out[k].shape[0]
         out = [{k: v[bid] for k, v in out.items()} for bid in range(batch_size)]
 
+        # Optional per-sample dump (frozen-body params for the cross-path check).
+        # Cheap: only a few small arrays per sample; off unless --dump_analysis.
+        if dump_on:
+            for d in out:
+                for k in cp_keys:
+                    if k in d:
+                        cp_records[k].append(np.asarray(d[k]))
+
         # evaluate
         cur_eval_result = tester._evaluate(out, cur_sample_idx)
         for k, v in cur_eval_result.items():
@@ -320,6 +370,10 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
             break
 
     tester._print_eval_result(eval_result)
+    if dump_on:
+        tag = args.testset
+        _save_bootstrap_npz(osp.join(cfg.result_dir, f'bootstrap_{tag}.npz'), eval_result)
+        _save_crosspath_npz(osp.join(cfg.result_dir, f'crosspath_{tag}.npz'), cp_records)
     result_path = _rename_result_file(result_filename)
     if result_path:
         print(f"[eval] result_file: {result_path}")
