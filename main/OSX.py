@@ -416,6 +416,13 @@ class Model(nn.Module):
                 out['smplx_mesh_cam_target'] = targets['smplx_mesh_cam']
             if 'bb2img_trans' in meta_info:
                 out['bb2img_trans'] = meta_info['bb2img_trans']
+            # Encoder-fidelity probe (gated): expose the encoder input + outputs so
+            # the MMCV-ViT (this normal path) can be compared tensor-for-tensor
+            # against the StandardViT port. No-op unless cfg.dump_encoder is True.
+            if getattr(cfg, 'dump_encoder', False):
+                out['_enc_input'] = body_img
+                out['_enc_img_feat'] = img_feat
+                out['_enc_task_tokens'] = task_tokens
             return out
 
 def init_weights(m):

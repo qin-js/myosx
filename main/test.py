@@ -209,6 +209,10 @@ def parse_args():
                         help='额外 dump 逐样本/逐手指标到 result_dir 下的 '
                              'bootstrap_<testset>.npz 与 crosspath_<testset>.npz，'
                              '供 tool/analysis/ 做 bootstrap CI 与跨路径校验；默认关闭、不改变评测行为')
+    parser.add_argument('--dump_encoder_n', type=int, default=0,
+                        help='编码器忠实度探针：dump 前 N 个样本的 body_img/img_feat/task_tokens 到 '
+                             'result_dir/encoder_<testset>.npz，供 tool/analysis/encoder_compare.py 比对 '
+                             'MMCV-ViT(normal) 与 StandardViT(pytorch)；0=关闭（默认）')
     args = parser.parse_args()
 
     if not args.gpu_ids:
@@ -322,6 +326,13 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
     cp_keys = ('smplx_root_pose', 'smplx_body_pose', 'smplx_shape',
                'cam_trans', 'bb2img_trans')
     cp_records = {k: [] for k in cp_keys}
+    # Encoder-fidelity probe: collect the (heavy) encoder I/O for the first N
+    # samples only. cfg.dump_encoder gates the stash inside the model forward.
+    enc_n = int(getattr(args, 'dump_encoder_n', 0) or 0)
+    cfg.dump_encoder = enc_n > 0
+    enc_keys = ('_enc_input', '_enc_img_feat', '_enc_task_tokens', 'bb2img_trans')
+    enc_records = {k: [] for k in enc_keys}
+    enc_collected = 0
     if args.max_eval_iters > 0:
         print(f"[eval] 限制只跑前 {args.max_eval_iters} 个 batch（部分评估，指标仅供快速参考）")
     
@@ -344,6 +355,13 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
         with torch.no_grad():
             out = tester.model(inputs, targets, meta_info, 'test')
 
+        # Encoder probe: keep the heavy encoder tensors only until N samples are
+        # collected, then drop them so the rest of eval is unaffected (and the
+        # cpu().numpy() below stays cheap).
+        if cfg.dump_encoder and enc_collected >= enc_n:
+            for kk in [k for k in list(out.keys()) if k.startswith('_enc_')]:
+                out.pop(kk)
+
         # save output
         out = {k: v.cpu().numpy() for k, v in out.items()}
         for k, v in out.items(): batch_size = out[k].shape[0]
@@ -356,6 +374,16 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
                 for k in cp_keys:
                     if k in d:
                         cp_records[k].append(np.asarray(d[k]))
+
+        # Encoder-fidelity probe: stash the first N samples' encoder I/O.
+        if cfg.dump_encoder and enc_collected < enc_n:
+            for d in out:
+                if enc_collected >= enc_n:
+                    break
+                if all(k in d for k in enc_keys):
+                    for k in enc_keys:
+                        enc_records[k].append(np.asarray(d[k]))
+                    enc_collected += 1
 
         # evaluate
         cur_eval_result = tester._evaluate(out, cur_sample_idx)
@@ -370,10 +398,12 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
             break
 
     tester._print_eval_result(eval_result)
+    tag = args.testset
     if dump_on:
-        tag = args.testset
         _save_bootstrap_npz(osp.join(cfg.result_dir, f'bootstrap_{tag}.npz'), eval_result)
         _save_crosspath_npz(osp.join(cfg.result_dir, f'crosspath_{tag}.npz'), cp_records)
+    if cfg.dump_encoder:
+        _save_crosspath_npz(osp.join(cfg.result_dir, f'encoder_{tag}.npz'), enc_records)
     result_path = _rename_result_file(result_filename)
     if result_path:
         print(f"[eval] result_file: {result_path}")
