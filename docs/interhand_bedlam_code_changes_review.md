@@ -1,5 +1,7 @@
 # InterHand26M + BEDLAM Code Changes Review
 
+> 📌 历史文档（InterHand+BEDLAM 阶段代码评审）。**早于 2026-06-27 编码器 padding 修复**。当前状态以 `docs/project_overview.md`、`docs/continue.txt` 为准。
+
 This document summarizes the implementation changes made for InterHand26M + BEDLAM finetuning and the later BEDLAM SMPL-X `flat_hand_mean` compatibility fix.
 
 ## 1. `main/config.py`

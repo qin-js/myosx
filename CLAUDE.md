@@ -77,17 +77,17 @@ All `Model.forward(inputs, targets, meta_info, mode)` implementations share this
 
 This is where the fork diverges from upstream OSX, and the part most likely to need work:
 
-- **Encoder**: `common/nets/vit.py` `StandardViT` (pure PyTorch, 31 task tokens, `pos_embed` length = num_patches + 31) replaces the MMCV `mmpose` ViT used by `OSX.py`.
+- **Encoder**: `common/nets/vit.py` `StandardViT` (pure PyTorch; 31 task tokens concatenated *after* the patch tokens with **no** pos_embed; `pos_embed` length is `num_patches + 1`, the +1 cls slot broadcast onto every patch) replaces the MMCV `mmpose` ViT used by `OSX.py`. As of 2026-06-27 the port is **bit-identical** to the MMCV ViT — `PatchEmbed` conv must use `padding=2` and `LayerNorm eps=1e-6` to match OSX (a `padding=0` bug had silently made `img_feat` ~24% off; verify with `tool/analysis/encoder_compare.py`).
 - **Hand/face heatmap heads**: `DCNv4PositionNet` (`common/nets/DCNv4.py`) replaces `PositionNet` for hand/face (DCNv4-based, `dcnv4_group=4`, `num_blocks=3`).
 - **Decoders**: `HandDecoder` / `FaceDecoder` (`common/nets/my_decoder.py`) — deformable-attention decoders with extras like hand-topology attention, face-region attention, and occlusion modules.
-- **Frozen backbone**: `encoder`, `body_position_net`, `body_regressor`, `box_net`, `hand_roi_net`, `face_roi_net` are frozen (`Model.frozen_modules`). Only `hand/face_position_net`, `hand/face_decoder`, and `hand/face_regressor` train. `Model.train()` is overridden to keep frozen BN layers in eval mode. `common/base.py` `_verify_freeze_status` asserts this on startup.
-- **Two-phase schedule** (`main/train.py`, hardcoded `PHASE1_EPOCHS = 17`): Phase 1 trains only position nets + decoders; Phase 2 also unfreezes the regressors at a much smaller LR. Each phase rebuilds the optimizer + `CosineAnnealingLR`.
+- **Frozen backbone**: `encoder`, `body_position_net`, `body_regressor`, `box_net`, `hand_roi_net`, `face_roi_net` are frozen (`Model.frozen_modules`). Only `hand/face_position_net`, `hand/face_decoder`, and `hand/face_regressor` train. Opt-in flags unfreeze a subset: `--train_hand_roi` moves `hand_roi_net` into the trainable set (route C), `--train_body_shape` re-enables `body_regressor.shape_out`/`cam_out` (T1) — both default off, byte-for-byte no-op when off. `Model.train()` is overridden to keep frozen BN layers in eval mode. `common/base.py` `_verify_freeze_status` asserts this on startup.
+- **Two-phase schedule** (`main/train.py`, `--phase1_epochs`, default 10): Phase 1 trains only position nets + decoders; Phase 2 also unfreezes the regressors at a much smaller LR. Each phase rebuilds the optimizer + `CosineAnnealingLR`.
 
 ### Checkpoint mechanics (important gotcha)
 
 `Trainer.save_model` writes **lightweight checkpoints containing only trainable-module tensors** (the frozen backbone is omitted to save space). Consequently, loading a `pytorch` checkpoint is always **two steps**:
 
-1. Load `--pretrained_model_path` (original OSX `osx_l.pth.tar`) to fill the frozen backbone, with extensive key remapping — `module.` stripping, `encoder.last_norm.`→`encoder.norm.`, `pos_embed` expansion (193→223 by repeating the cls token), and MMCV-decoder→custom-decoder key mapping.
+1. Load `--pretrained_model_path` (original OSX `osx_l.pth.tar`) to fill the frozen backbone, with extensive key remapping — `module.` stripping, `encoder.last_norm.`→`encoder.norm.`, and MMCV-decoder→custom-decoder key mapping (`encoder.pos_embed` is now a direct shape match — `StandardViT.pos_embed` is `(1,193,1024)` like OSX; the old 193→223 expansion is gone).
 2. Load `--continue_train_path` (the lightweight snapshot) on top for the trained hand/face modules.
 
 This logic is duplicated across `Trainer._load_pretrained_frozen` / `_load_resume_checkpoint` (`common/base.py`) and `Tester._make_model` / `Demoer._make_model`. `get_model('test1')` (note: not `'test'`) builds the `pytorch` test model. If you change module structure or naming, you will likely need to update these remapping blocks.
@@ -96,7 +96,7 @@ This logic is duplicated across `Trainer._load_pretrained_frozen` / `_load_resum
 
 - The `Config` singleton `cfg` is mutated globally. **`cfg.set_args(...)` must be called before `cfg.set_additional_args(...)`**; the latter calls `prepare_dirs`, which creates `output/<exp_name>/{model_dump,vis,log,code,result}` and **copies key source files into `code/` as a per-run backup**.
 - `encoder_setting` (`osx_b`/`osx_l`) sets `feat_dim` (768/1024) and the encoder config/pretrained paths.
-- **Training datasets are set in `config.py`, not via CLI** (`trainset_3d` / `trainset_2d` near line 27 — currently `['HAA500']`). The benchmark flags override these. The test set comes from `--testset` (`EHF` or `HAA500`).
+- **Training datasets are set in `config.py`, not via CLI** (`trainset_3d` / `trainset_2d` near line 27 — currently `['InterHand26M', 'UBody', 'MSCOCO']`). The benchmark flags override these. The test set comes from `--testset` (`EHF` / `UBody` / `InterHand26M` / `HInt` / `HAA500`).
 - `cfg.visualization` toggles saving ViT intermediate-layer feature maps / attention during test inference (handled by `common/utils/visualize.py`, output to `vit_vis/`); off by default.
 
 ## Datasets
@@ -105,7 +105,7 @@ Each dataset has a loader under `data/<NAME>/<NAME>.py` exposing a class named a
 
 ## WIP gotchas
 
-- `main/test.py` hard-stops after 50 batches (`if itr >= 50: break`) — evaluation is currently partial/debug.
+- `main/test.py` evaluates the full testset by default; `--max_eval_iters N` caps to N batches for quick checks. `--dump_analysis` / `--dump_encoder_n N` dump per-sample npz consumed by `tool/analysis/` (`bootstrap_ci.py`, `crosspath_compare.py`, `encoder_compare.py`).
 - `main/model_core.py` and `main/OSX.py` contain `print` debug statements in the hot forward path.
-- `main/OSX.py` (`normal`) has its decoder calls commented out, so it currently behaves like an encoder-only variant despite the name.
+- `main/OSX.py` (`normal`) runs the **full original OSX path** (MMCV ViT + MMCV decoders + original heads) and is a faithful OSX baseline — it is the source of the 19.58 / 0.219 / 0.487 reference numbers.
 - `--debug_vis` in `test.py` renders GT keypoints/bboxes onto images into `output/<exp>/debug_vis/`.

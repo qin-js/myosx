@@ -1,10 +1,20 @@
 # Stage 3 之后的路线与决策（in-the-wild hand 主线）
 
-更新时间：2026-06-26
+更新时间：2026-06-27
 
 本文件是**前瞻性路线/决策文档**，承接 Stage 3 收口之后的方向选择。
 - 按时间的结果记录见 `docs/experiment_log.md`；当前状态快照见 `docs/project_overview.md`。
 - 本文件回答的是：**手部微调收口后，往哪走、为什么、风险多大、怎么判定生死。**
+
+---
+
+## 0′. 2026-06-27 更新：编码器 bug 已修复，UBody confound 解决
+
+**本文件 §0–§3 围绕"UBody natural-hand 仍输 OSX、可能有 confound"展开。该 confound 现已坐实并解决：**
+
+- 根因是 `StandardViT` PatchEmbed padding 错（0 vs OSX 2），冻结 body/cam 一直漂（cross-path 腕 1.4°）。修复后 pytorch 编码器与 OSX **逐比特一致**，cross-path 腕漂移归零。详见 `experiment_log.md` 2026-06-27。
+- 修复后的干净结论：**手头无需重训**；UBody `[abs]` 与 EHF Face **免费追平 OSX**；UBody `[wa]` 那 0.010 **仍在、且现在 100% 是手头**（不再有 body confound）。
+- **所以 §0 那张"现状表"里的 `[abs]` 退化、wrist-rel 部分归因要更新**：`[abs]` 已基本追平；`[wa]` 0.010 是唯一干净未过项。下面 §1–§7 的路线逻辑（路线 C 优先、wrist-rel 需架构改动、兜底判据）**基本仍成立**，只是现在都在无 confound 的干净地基上测量。
 
 ---
 

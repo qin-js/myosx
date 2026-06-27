@@ -1,6 +1,6 @@
 # 项目总览
 
-更新时间：2026-06-26
+更新时间：2026-06-27
 
 ## 项目目标
 
@@ -11,12 +11,13 @@
 - UBody：提供自然图里的手/脸上下文，是当前判断 full-body natural-hand pipeline 的关键数据。
 - HInt：提供 held-out hand-interaction 2D 手关键点评测；当前 loader 是 hand-crop/local-hand 口径。
 
-当前战略已经收敛：**脸不是贡献点；局部手能力已在 InterHand 与 HInt hand-crop 上超过 OSX，但完整自然图里的手部 pipeline（UBody natural-hand）仍低于原始 OSX。**
+当前战略（2026-06-27 修订）：**脸不是贡献点；编码器移植 bug 已修复（pytorch 路径现与 OSX 逐比特一致）；手头对修复鲁棒、无需重训。修复后 UBody `[abs]` 与 EHF Face 免费追平 OSX，InterHand/HInt 仍赢；唯一干净未过的是 UBody natural-hand `[wa]` 落后 OSX 0.010（已隔离为纯手头自然图手指 articulation）。**
 
 ## 当前模型阶段
 
 | 阶段 | 实验 | 状态 | 结论 |
 |---|---|---|---|
+| **编码器修复** | `vit.py` PatchEmbed padding | **已完成 2026-06-27** | StandardViT 移植 bug(padding 0 vs OSX 2)修复 → pytorch 编码器与 OSX 逐比特一致；手头鲁棒、无需重训；UBody `[abs]`/EHF Face 免费追平 |
 | 手部微调 | `interhand_bedlam_c` | 已完成 | InterHand-test 全量 OSX 19.58mm → `_c` 16.82mm |
 | 面部微调 | `face_ubody_e` | 已完成 | EHF Face 回到约 6.20mm，但未超过原始 OSX |
 | 自然手评测 | `output/eval_ubody` | 三档 per-finger 完成 | 微调后自然手 2D 低于 OSX；退化沿指节递增、集中在 tip/j3，接近 `pretrained` 随机-ish 手头参照 |
@@ -26,6 +27,21 @@
 | 身体定性（shape） | `body_shape_t1` | 代码已实现·待跑 | 诊断＝betas mean-reversion（投影/朝向 OK）；T1 解冻 `shape_out`+`cam_out`，gated 默认关闭、对手/脸零影响，详见 `experiment_log.md` 2026-06-25 |
 
 ## 关键结果
+
+### 当前干净基线（2026-06-27，snapshot_2 @ 修复编码器）
+
+这是现在的 ground truth。手头未重训（仍是旧编码器训出），但在修复编码器上评测；body 与 OSX 逐比特一致，对比无 confound。
+
+| 指标 | OSX | snap2 @修复 | 判定 |
+|---|---:|---:|---|
+| InterHand PA-MPJPE | 19.58 | **16.78** | 赢 −14%（in-domain caveat：OSX 未训 InterHand）|
+| InterHand wrist-rel | 86.32 | 84.13 | 略好；绝对手系仍未解 |
+| UBody [abs] NME | 0.311 | 0.316 | ~追平(免费) |
+| UBody [wa] NME | 0.219 | 0.229 | 输 0.010（干净=手头自然图手指）|
+| EHF Face PA-MPVPE | 6.09 | 6.15 | ~追平(免费) |
+| HInt [all wa] NME | 0.487 | 0.480 | 赢(held-out hand-crop) |
+
+> ⚠️ 下面各分项小节的数字是**旧（bug）编码器**上的历史记录，保留作诊断参照。编码器修复后 `[wa]`/InterHand PA 基本不变、`[abs]`/Face 改善，详见 `experiment_log.md` 2026-06-27。
 
 ### InterHand
 
@@ -92,19 +108,21 @@ Stage 3 snapshot_1 的 per-level `[wa]` NME 为 j1 0.206 / j2 0.225 / j3 0.242 /
 
 ## 当前判断
 
+- **编码器移植 bug（2026-06-27 修复）改写了多条旧结论**：`StandardViT` PatchEmbed padding 错（0 vs OSX 2），冻结 body/box/ROI 一直在吃 24% 错误特征。修复后：① 手头对此鲁棒、无需重训；② UBody `[abs]`、EHF Face 之前被归为”自然手退化”的，有一块其实是这个 bug，已免费回收；③ UBody `[wa]` 那 0.010 在 body 与 OSX 逐比特一致后仍在 → 被干净隔离为纯手头问题。
 - UBody 上的脸不是贡献点，因为 OSX 本来就在 UBody 域内，微调最多恢复而非超越。
 - BEDLAM 在当前 frozen encoder/body/box 设置下没有发挥原本的全身 GT mesh 价值；还引入了小手/遮挡噪声工程成本。
-- 手部 benchmark 增益与 full-body natural-hand 仍存在冲突，但不应再笼统称为“野外不泛化”：HInt hand-crop 已小幅超过 OSX，UBody full-body natural-hand 仍差于 OSX。
-- Stage 3 的 UBody 自然手监督 + predicted ROI + mixed data 组合配方有效，主要修复 UBody 末端退化；HInt 不动说明它测不到这个 full-body pipeline 瓶颈。
-- `coco_pilot` no-gate 配方稳定但只提供轻微 polish；MSCOCO hard ROI gate 因 pass 率低导致训练失稳，暂不作为主线。
+- 手部不是”野外不泛化”：HInt hand-crop held-out 小幅赢 OSX、UBody `[abs]` 追平、`[wa]` 落后 0.010。InterHand −14% 是 in-domain 特化，且 OSX 未训 InterHand（fine-tune vs zero-shot），论文需补公平基线。
+- `coco_pilot` no-gate 只轻微 polish；MSCOCO hard ROI gate 因 pass 率低失稳，暂不作为主线（结论在旧编码器上得出，可在干净地基重评）。
 
 ## 推荐下一步
 
-Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`（决策与 snapshot_2 三件套对照见 `docs/experiment_log.md` 2026-06-25，HInt 全链补测见 2026-06-26）。手部基准稳固（InterHand 16.76 / -14%），HInt hand-crop 小幅赢 OSX，UBody natural-hand 回收到 `[wa]` 0.229（接近 OSX 0.219、未追平、确认平台），身体/脸平价。**不再继续 Stage 3 训练**。
+地基已修正（编码器与 OSX 逐比特一致），手头无需重训，`snapshot_2 @ 修复编码器`是干净工作基线。下一步：
 
-COCO pilot 已完成初判：HInt 无新增，UBody/InterHand 轻微改善，hard MSCOCO ROI gate 不稳定。后续若继续手部主线，重点应从“继续刷 HInt”转向 **full-body natural-hand pipeline**：优先考虑小心版路线 C（解冻 `hand_roi_net` + decoder/regressor 小 LR 共适应，先不动 `box_net`，不用 hard MSCOCO gate），主判据看 UBody natural-hand，HInt 作为 local hand-crop guardrail。完整路线修正见 `docs/post_stage3_roadmap.md`。
-
-次要/附带：**`body_shape_t1`**（代码已实现，默认关闭、对手/脸零影响）——配图级，不当主线。手部线 in-domain 打磨到此为止；wrist-rel 需架构改动、列为高风险 stretch；不碰解冻 body/encoder；不再继续 face-only。
+1. **干净地打 UBody `[wa]` 那 0.010**（现在无 confound，可信测量）：
+   - **路线 C**（`--train_hand_roi`，已实现、默认关闭）：warm-start snap2，修复编码器上解冻 `hand_roi_net` + decoder/regressor 小 LR 共适应，不动 `box_net`，不用 hard MSCOCO gate。主判据 UBody `[wa]`，kill 线 `[wa]`≤0.224，guardrail InterHand≤17.0 / HInt 不退 / EHF~6.2。
+   - 备选/可叠加：末端 2D loss 加权（差距集中 tip/j3）、更多自然手监督。
+2. **InterHand 公平基线**：补”在 InterHand 上同数据微调的 OSX”，或把 headline 让位给 held-out HInt。不补的话 −14% 在审稿里站不住。
+3. 次要/附带：**`body_shape_t1`**（`--train_body_shape`，默认关闭、对手/脸零影响）——配图级，不当主线。wrist-rel（仍 84mm）需架构改动、高风险 stretch；不碰解冻 body/encoder（encoder 现已忠实，更没必要动）。
 
 ## 身体定性观感（独立小实验，已立项·代码已实现）
 

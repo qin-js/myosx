@@ -2,6 +2,41 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-06-27
+
+### 【重大】编码器移植 bug 发现并修复：StandardViT 与 OSX MMCV ViT 现逐比特一致
+
+**根因**：`common/nets/vit.py` 的 `StandardViT.PatchEmbed` 卷积用了 `padding=0`，而 OSX 的 MMCV ViT 用 `padding = 4 + 2*(ratio//2 - 1) = 2`（`ratio=1`，见 `transformer_utils/.../vit.py:130` 与 `body_encoder_large.py`）。两者输出都是 (16,12)/192 patch，所以形状检查全过、一直隐形；但同一份卷积权重在 padding 2 vs 0 下，每个 patch 在偏移 2px 的窗口上卷积 → patch 特征系统性错。次要：`LayerNorm` eps 端口默认 1e-5，OSX 用 1e-6。
+
+**怎么发现的**：新增编码器忠实度探针 `tool/analysis/encoder_compare.py`（配合 `test.py --dump_encoder_n N`）。在**相同输入**(body_img max|A−B|=0)上量到 `img_feat` 相对 L2 ≈ **0.24**、`task_tokens` ≈ 0.05 —— patch≫token 的不对称直接指向 PatchEmbed，再对配置确认。
+
+**修复与验证**（fix commit `e9566c7`）：`padding=2` + `eps=1e-6`。修复后探针 `img_feat`/`task_tokens` 相对 L2 = **0.000e+00（逐比特相同）**；`crosspath_compare` 的腕漂移 **1.4° → 0**。冻结骨干(encoder→body/box/ROI)现在与 OSX-normal 完全等价。
+
+**`snapshot_2` 在修复编码器上的干净基线**（手头未重训，仍是旧编码器训出来的）：
+
+| 指标 | OSX | snap2 @旧(bug) | snap2 @修复 | 判定 |
+|---|---:|---:|---:|---|
+| InterHand PA-MPJPE | 19.58 | 16.76 | **16.78** | 赢 −14%（in-domain，见 caveat）|
+| InterHand wrist-rel | 86.32 | 84.32 | 84.13 | 略好 |
+| UBody [abs] NME | 0.311 | 0.324 | **0.316** | ~追平(免费) |
+| UBody [wa] NME | 0.219 | 0.229 | **0.229** | 输 0.010（干净=手头）|
+| UBody PA Hands | 10.29 | 10.28 | 10.15 | 略好 |
+| EHF Face PA-MPVPE | 6.09 | 6.25 | **6.15** | ~追平(免费) |
+| EHF Hands PA-MPVPE | 15.97 | 15.69 | 15.67 | 持平 |
+| HInt [all wa] NME | 0.487 | 0.480 | 0.480 | 赢(held-out) |
+| HInt [all abs] NME | 0.451 | 0.436 | 0.445 | 略退(hand-crop 噪声) |
+
+**判读（战略级，多条旧结论被推翻）**：
+
+1. **手头对编码器修复完全鲁棒、无需重训**：InterHand PA、UBody/HInt `[wa]` 修复前后纹丝不动（per-finger ±0.001）。`hand_position_net` soft-argmax 重定位保住了相对手形。snap2@修复是可用的工作基线，直接往前走。
+2. **编码器修复是净赚**：body 依赖口径(`[abs]`、EHF Face)免费向 OSX 收敛(0.324→0.316、6.25→6.15)，之前归因为"自然手退化/[abs]退化"的，**有一块根本是这个 bug**。
+3. **唯一真问题被干净隔离**：UBody `[wa]` 那 0.010 在 body 与 OSX 逐比特一致后**仍在** → 100% 是手头自然图相对手指 articulation（不是 body/port/腕漂移）。bootstrap 配对 CI 仍为 `[-0.0117, -0.0087]`、显著。
+4. **InterHand −14% 的 caveat（不受本次修复影响）**：OSX 原始训练集(MSCOCO/H36M/MPII/UBody/AGORA)**不含 InterHand26M**，故 −14% 本质是"我们微调 vs OSX 零样本"。论文要么补一个"同数据微调的 OSX"做公平基线，要么 headline 让位给 held-out 泛化(HInt)。
+
+**新增工具**：`tool/analysis/{bootstrap_ci,crosspath_compare,encoder_compare}.py`（纯 numpy）+ `test.py --dump_analysis`(逐手指标/冻结 body 参数 npz) / `--dump_encoder_n`(编码器 I/O npz)。**Route C** `--train_hand_roi`(解冻 `hand_roi_net` 小 LR 共适应，默认关闭、零影响)已实现。
+
+**下一步**：① 干净地打那 0.010——Route C(warm-start snap2、修复编码器、kill 线 UBody `[wa]`≤0.224) 或末端 2D loss 加权(差距集中 tip/j3) 或更多自然手监督，现在都能无 confound 测量；② 处理 InterHand 公平基线。
+
 ## 2026-06-26
 
 ### HInt 全链补测：HInt win 起点在 `_c snapshot_8`，COCO pilot 对 HInt 无新增收益

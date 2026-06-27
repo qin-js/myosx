@@ -1,76 +1,57 @@
 # OSX 微调交接摘要
 
-更新时间：2026-06-26
+更新时间：2026-06-27
 
 这个文件只保留重开会话时必须先看的信息。完整项目总览见
 `docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，路线判断见
 `docs/post_stage3_roadmap.md`，旧长版交接记录已归档到
 `docs/archive/continue_2026-06-23_full.txt`。
 
-## 当前结论
+## 当前结论（2026-06-27 重大更新）
 
-- `_c snapshot_8` 已建立手部局部能力：InterHand-test 全量 **OSX 19.58mm → 16.82mm**，HInt hand-crop held-out **OSX `[wa]` 0.487 → 0.480**。
-- `face_ubody_e snapshot_4` 冻手训脸，HInt 与 `_c` 完全一致；脸只恢复到 EHF Face 约 6.20mm，未超过 OSX 约 6.09mm。
-- Stage 3 `joint_polish_f` 已收口，终点 `snapshot_2`：InterHand **16.76mm**，UBody natural-hand `[wa]` **0.250→0.229**，HInt 仍约 **0.480**，EHF Face 6.25。Stage 3 的真实贡献是修 UBody full-body natural-hand 退化，不是提升 HInt。
-- `coco_pilot` no-gate 稳定但只是轻微 polish：HInt 基本不动，InterHand 约 **16.67-16.69mm**，UBody `[wa]` 约 **0.227-0.228**。MSCOCO hard ROI gate 曾在约 1.3k iter 后导致 loss 整体飙高，暂不采用。
-- 当前手部主问题：**HInt hand-crop 已小幅赢 OSX，但 UBody full-body natural-hand 仍未追平 OSX 0.219**。后续不要只盯 HInt。
+- **编码器移植 bug 已修复**：`StandardViT`(pytorch 路径)的 `PatchEmbed` 卷积 padding 之前是 0，OSX MMCV ViT 是 2，导致 patch 特征系统性错（`img_feat` 相对 OSX 偏 24%，但形状相同所以一直隐形）。修复后(`common/nets/vit.py`，padding=2 + LayerNorm eps 1e-6)，pytorch 编码器与 OSX **逐比特一致**。验证工具 `tool/analysis/encoder_compare.py`、`crosspath_compare.py`。
+- **手头对修复完全鲁棒、无需重训**：`snapshot_2`(旧编码器训出)直接在修复编码器上评测，InterHand PA 16.76→**16.78**、UBody/HInt `[wa]` 纹丝不动。snap2@修复是可用工作基线。
+- **编码器修复净赚**：UBody `[abs]` 0.324→**0.316**、EHF Face 6.25→**6.15**，免费向 OSX 收敛（之前的"自然手/[abs]退化"有一块就是这个 bug）。
+- **唯一真问题被干净隔离**：UBody `[wa]` 0.229 vs OSX 0.219 的 **0.010**，在 body 与 OSX 逐比特一致后仍在 → 100% 是手头自然图相对手指 articulation。配对 bootstrap CI `[-0.0117,-0.0087]`、显著。
+- **InterHand −14% 的 caveat**：OSX 原始训练集**不含 InterHand26M**，−14% 本质是"我们微调 vs OSX 零样本"，论文需补公平基线或改用 held-out(HInt) 当 headline。
 
-## 当前关键指标
+## 当前关键指标（snapshot_2 @ 修复编码器）
 
-| 模型 | InterHand PA | HInt `[wa]` NME | UBody `[wa]` NME | 结论 |
-|---|---:|---:|---:|---|
-| OSX normal | 19.58 | 0.487 | 0.219 | 原始 baseline |
-| `_c snapshot_8` | 16.82 | 0.480 | 0.250（由 `face_ubody_e` 冻手等价） | 局部手能力成立，UBody 退化 |
-| `joint_polish_f snapshot_2` | 16.76 | 0.480 | 0.229 | Stage 3 终点，修复 UBody 但未追平 |
-| `coco_pilot snapshot_1/itr3000` | 16.67-16.69 | 0.480-0.481 | 0.227-0.228 | 轻微 polish，HInt 无新增 |
+| 指标 | OSX | snap2 @修复 | 判定 |
+|---|---:|---:|---|
+| InterHand PA | 19.58 | **16.78** | 赢 −14%（in-domain caveat）|
+| InterHand wrist-rel | 86.32 | 84.13 | 略好，绝对手系仍未解 |
+| UBody [abs] NME | 0.311 | 0.316 | ~追平(免费) |
+| UBody [wa] NME | 0.219 | 0.229 | 输 0.010（干净=手头）|
+| EHF Face PA-MPVPE | 6.09 | 6.15 | ~追平(免费) |
+| HInt [all wa] NME | 0.487 | 0.480 | 赢(held-out hand-crop) |
 
 ## 下一步建议
 
-1. 不再继续同配方 COCO pilot 长训；no-gate 结果可作为 polish checkpoint，但不是主突破。
-2. 不要直接开启 `--mscoco_use_hand_roi_quality`；当前 hard gate 在 MSCOCO 上 pass 率低且已证实不稳。若再试，只能改 soft weighting 或低阈值短跑。
-3. 若继续手部主线，优先小心版路线 C：解冻 `hand_roi_net`，与 hand decoder/regressor 小 LR 共适应；先不动 `box_net`，主判据看 UBody natural-hand，HInt/InterHand 只做 guardrail。
-4. 身体 shape T1 是独立附带线：代码已实现，默认关闭；目标是 `body_regressor.shape_out` + `cam_out` 修 betas mean-reversion，详见 `experiment_log.md` 2026-06-25。
+1. **干净地打 UBody `[wa]` 那 0.010**（现在无 confound）：候选 — Route C(`--train_hand_roi`，解冻 `hand_roi_net` 小 LR 共适应，已实现、默认关闭；warm-start snap2，kill 线 `[wa]`≤0.224)；末端 2D loss 加权(差距集中 tip/j3)；更多自然手监督。
+2. **处理 InterHand 公平基线**：补一个"在 InterHand 上同数据微调的 OSX"，或把 headline 让位给 held-out HInt。
+3. 身体 shape T1(`--train_body_shape`)仍是独立附带线，默认关闭。
 
-## 常用评估命令
-
-HInt：
+## 常用评估命令（pytorch 路径现在自动带编码器修复）
 
 ```bash
-cd /workspace/myosx/main
-python test.py --gpu 0 --testset HInt --exp_name output/eval_hint \
-  --decoder_setting pytorch --encoder_setting osx_l \
-  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar \
-  --hint_root /workspace/HInt_annotation_partial \
-  --hint_split test --hint_sources epick,newdays
-```
-
-UBody natural-hand：
-
-```bash
-cd /workspace/myosx/main
+cd main
+# UBody natural-hand（加 --dump_analysis 可同时出 bootstrap/crosspath npz）
 export UBODY_ANNOTATION_DIR=/workspace/myosx/dataset/UBody/annotations_filtered
-python test.py --gpu 0 --testset UBody --exp_name output/eval_joint_polish_f \
+python test.py --gpu 0 --testset UBody --exp_name output/eval_x \
   --decoder_setting pytorch --encoder_setting osx_l \
   --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
   --continue_train_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar
-```
 
-InterHand 全量：
-
-```bash
-cd /workspace/myosx/main
-python test.py --gpu 0 --testset InterHand26M \
-  --decoder_setting pytorch --encoder_setting osx_l \
-  --interhand_eval_split test --max_eval_iters -1 \
-  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
-  --exp_name output/eval_joint_polish_f \
-  --continue_train_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar
+# InterHand 全量： --testset InterHand26M --interhand_eval_split test --max_eval_iters -1
+# HInt：          --testset HInt --hint_root /workspace/HInt_annotation_partial --hint_split test --hint_sources epick,newdays
+# 编码器忠实度探针： 两次 test.py 各加 --dump_encoder_n 32 (normal / pytorch)，再跑 tool/analysis/encoder_compare.py
 ```
 
 ## 文档入口
 
 - `docs/project_overview.md`：当前项目状态、关键结果、推荐下一步。
-- `docs/experiment_log.md`：按时间追加的实验日志；2026-06-26 记录 HInt 全链补测和 COCO pilot 复盘。
-- `docs/post_stage3_roadmap.md`：路线判断；HInt/UBody 口径修正、COCO pilot 复盘、路线 C 条件。
-- `docs/archive/continue_2026-06-23_full.txt`：旧长版交接记录，保留历史细节。
+- `docs/experiment_log.md`：按时间追加；2026-06-27 记录编码器 bug 修复 + 干净基线。
+- `docs/post_stage3_roadmap.md`：路线判断（UBody confound 已被编码器修复解决）。
+- `tool/analysis/`：`bootstrap_ci.py` / `crosspath_compare.py` / `encoder_compare.py`（纯 numpy 评测分析工具）。
+- `docs/archive/continue_2026-06-23_full.txt`：旧长版交接记录。

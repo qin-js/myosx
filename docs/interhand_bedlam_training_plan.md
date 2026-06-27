@@ -1,5 +1,7 @@
 # InterHand26M + BEDLAM Training Plan for myosx
 
+> 📌 历史文档（InterHand+BEDLAM 阶段计划）。**早于 2026-06-27 编码器 padding 修复**，且 BEDLAM 已降权。当前项目状态/路线以 `docs/project_overview.md`、`docs/continue.txt` 为准，本文件仅作配方参照。
+
 ## 1. Training Goal
 
 Use BEDLAM as full-body SMPL-X rehearsal data and InterHand26M as hand-specific auxiliary data.
