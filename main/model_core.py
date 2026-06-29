@@ -119,6 +119,19 @@ class Model(nn.Module):
                 if m is not self.hand_regressor
             ]
 
+        # WA2D polish stabilization: freeze only the DCNv4 hand_position_net
+        # while still training hand_decoder/hand_regressor. Keep the name in
+        # trainable_module_names so lightweight snapshots include its warm-start
+        # tensors; freeze/status checks prioritize frozen_modules.
+        if (getattr(cfg, 'freeze_hand_position_net', False) and
+                getattr(cfg, 'train_hand_modules', True)):
+            if 'hand_position_net' not in self.frozen_modules:
+                self.frozen_modules = self.frozen_modules + ['hand_position_net']
+            self.trainable_modules = [
+                m for m in self.trainable_modules
+                if m is not self.hand_position_net
+            ]
+
         # Route C (default OFF): unfreeze hand_roi_net so the feature-level hand
         # crop+upsample can co-adapt with the hand decoder/regressor (small lr,
         # set in train.py). Moving the whole module from frozen_modules into the
@@ -170,6 +183,14 @@ class Model(nn.Module):
         else:
             self.hand_loss_weight_full = None
             self.hand_loss_weight_pos = None
+
+        wa_level_weight = torch.tensor([
+            float(getattr(cfg, 'hand_wa_2d_j1_weight', 1.0)),
+            float(getattr(cfg, 'hand_wa_2d_j2_weight', 1.0)),
+            float(getattr(cfg, 'hand_wa_2d_j3_weight', 1.0)),
+            float(getattr(cfg, 'hand_wa_2d_tip_weight', 1.0)),
+        ], dtype=torch.float32).repeat(5)
+        self.register_buffer('hand_wa_2d_level_weight', wa_level_weight)
 
         self.training_phase = 1
 
@@ -332,6 +353,115 @@ class Model(nn.Module):
             bbox_h[:, None] / cfg.input_body_shape[0] * cfg.output_hm_shape[1]
         )
         return x0, y0, x_scale, y_scale
+
+    def _hand_wa_2d_source_mask(self, meta_info, device, batch_size):
+        source_cfg = getattr(cfg, 'hand_wa_2d_loss_sources', 'ubody,mscoco')
+        if isinstance(source_cfg, str):
+            source_cfg = source_cfg.replace('，', ',').replace('、', ',')
+            sources = {s.strip().lower() for s in source_cfg.split(',') if s.strip()}
+        else:
+            sources = {str(s).strip().lower() for s in source_cfg if str(s).strip()}
+
+        mask = torch.zeros((batch_size,), device=device)
+        if 'all' in sources:
+            return mask + 1.0
+        if 'ubody' in sources and 'is_ubody' in meta_info:
+            mask = torch.maximum(mask, meta_info['is_ubody'].to(device).view(-1).float())
+        if 'interhand' in sources and 'is_interhand' in meta_info:
+            mask = torch.maximum(mask, meta_info['is_interhand'].to(device).view(-1).float())
+        if ('mscoco' in sources or 'coco' in sources) and 'dataset_id' in meta_info:
+            dataset_id = meta_info['dataset_id'].to(device).view(-1)
+            mask = torch.maximum(mask, (dataset_id == 3).float())
+        return mask.clamp(0.0, 1.0)
+
+    def _direct_hand_wa_2d_loss(self, joint_proj, targets, meta_info):
+        loss_weight = float(getattr(cfg, 'hand_wa_2d_loss_weight', 0.0))
+        if loss_weight <= 0:
+            return None
+
+        device = joint_proj.device
+        batch_size = joint_proj.shape[0]
+        source_mask = self._hand_wa_2d_source_mask(meta_info, device, batch_size)
+        min_joints = max(int(getattr(cfg, 'hand_wa_2d_loss_min_joints', 4)), 2)
+
+        per_sample_sum = joint_proj.new_zeros((batch_size,))
+        per_sample_weighted_sum = joint_proj.new_zeros((batch_size,))
+        hand_count = joint_proj.new_zeros((batch_size,))
+        level_weight = self.hand_wa_2d_level_weight.to(device).view(1, -1)
+
+        lhand_idx = list(smpl_x.joint_part['lhand'])
+        rhand_idx = list(smpl_x.joint_part['rhand'])
+        pred_hand = torch.stack((
+            torch.cat((joint_proj[:, smpl_x.lwrist_idx:smpl_x.lwrist_idx + 1, :2],
+                       joint_proj[:, lhand_idx, :2]), dim=1),
+            torch.cat((joint_proj[:, smpl_x.rwrist_idx:smpl_x.rwrist_idx + 1, :2],
+                       joint_proj[:, rhand_idx, :2]), dim=1),
+        ), dim=1)
+
+        gt_hand_parts = []
+        gt_valid_parts = []
+        target_xy = targets['joint_img'][:, :, :2].to(device)
+        trunc = meta_info['joint_trunc'].to(device)[:, :, 0] > 0
+        for part_name, wrist_idx in (('lhand', smpl_x.lwrist_idx),
+                                     ('rhand', smpl_x.rwrist_idx)):
+            hand_idx = list(smpl_x.joint_part[part_name])
+            gt_hand_parts.append(torch.cat((target_xy[:, wrist_idx:wrist_idx + 1, :],
+                                            target_xy[:, hand_idx, :]), dim=1))
+            gt_valid_parts.append(torch.cat((trunc[:, wrist_idx:wrist_idx + 1],
+                                             trunc[:, hand_idx]), dim=1))
+        gt_hand = torch.stack(gt_hand_parts, dim=1)
+        gt_valid = torch.stack(gt_valid_parts, dim=1)
+
+        if 'coco_hand_joint_img' in targets and 'coco_hand_joint_trunc' in targets:
+            coco_gt_hand = targets['coco_hand_joint_img'].to(device)[:, :, :, :2]
+            coco_gt_valid = targets['coco_hand_joint_trunc'].to(device)[:, :, :, 0] > 0
+            use_coco = coco_gt_valid.sum(dim=2) > 0
+            # UBody/MSCOCO have real COCO-WholeBody hand wrists here; datasets
+            # with the dummy MultipleDatasets filler fall back to joint_img.
+            gt_hand = torch.where(use_coco[:, :, None, None], coco_gt_hand, gt_hand)
+            gt_valid = torch.where(use_coco[:, :, None], coco_gt_valid, gt_valid)
+
+        for side_idx in range(2):
+            pred = pred_hand[:, side_idx, 1:, :]
+            gt = gt_hand[:, side_idx, 1:, :2]
+            pred_wrist = pred_hand[:, side_idx, 0, :]
+            gt_wrist = gt_hand[:, side_idx, 0, :2]
+
+            finger_finite = torch.isfinite(pred).all(dim=2) & torch.isfinite(gt).all(dim=2)
+            wrist_finite = torch.isfinite(pred_wrist).all(dim=1) & torch.isfinite(gt_wrist).all(dim=1)
+            finger_valid = gt_valid[:, side_idx, 1:] & finger_finite
+            wrist_valid = gt_valid[:, side_idx, 0] & wrist_finite
+
+            all_gt = gt_hand[:, side_idx, :, :2]
+            all_valid = torch.cat((wrist_valid[:, None], finger_valid), dim=1)
+            valid_num = all_valid.sum(dim=1)
+            gt_min = all_gt.masked_fill(~all_valid[:, :, None], 1e6).amin(dim=1)
+            gt_max = all_gt.masked_fill(~all_valid[:, :, None], -1e6).amax(dim=1)
+            diag = torch.linalg.norm(gt_max - gt_min, dim=1)
+
+            hand_ok = (source_mask > 0) & wrist_valid & (valid_num >= min_joints) & (diag > 1e-4)
+            pred_wa = pred + (gt_wrist - pred_wrist)[:, None, :]
+            diff = pred_wa - gt
+            diff = torch.where(finger_valid[:, :, None], diff, diff.new_zeros(diff.shape))
+            err = torch.sqrt((diff * diff).sum(dim=2) + 1e-8) / diag.clamp(min=1e-4)[:, None]
+            per_hand = (err * finger_valid.float()).sum(dim=1) / finger_valid.float().sum(dim=1).clamp(min=1.0)
+            valid_weight = finger_valid.float() * level_weight
+            per_hand_weighted = (err * valid_weight).sum(dim=1) / valid_weight.sum(dim=1).clamp(min=1.0)
+            per_sample_sum = per_sample_sum + torch.where(hand_ok, per_hand, per_hand.new_zeros(per_hand.shape))
+            per_sample_weighted_sum = per_sample_weighted_sum + torch.where(
+                hand_ok, per_hand_weighted, per_hand_weighted.new_zeros(per_hand_weighted.shape))
+            hand_count = hand_count + hand_ok.float()
+
+        raw = per_sample_sum / hand_count.clamp(min=1.0)
+        raw = torch.where(hand_count > 0, raw, raw.new_zeros(raw.shape))
+        weighted_raw = per_sample_weighted_sum / hand_count.clamp(min=1.0)
+        weighted_raw = torch.where(hand_count > 0, weighted_raw, weighted_raw.new_zeros(weighted_raw.shape))
+        return {
+            'hand_wa_2d': weighted_raw[:, None] * loss_weight,
+            '_hand_wa_2d_raw': raw[:, None],
+            '_hand_wa_2d_weighted_raw': weighted_raw[:, None],
+            '_hand_wa_2d_active': (hand_count / 2.0)[:, None],
+        }
 
     def get_trainable_params_with_lr(self, base_lr):
         """
@@ -645,6 +775,13 @@ class Model(nn.Module):
                                   self.coord_loss(rhand_bbox_size, targets['rhand_bbox_size'], meta_info['rhand_bbox_valid'][:, None]))
             loss['face_bbox'] = (self.coord_loss(face_bbox_center, targets['face_bbox_center'], meta_info['face_bbox_valid'][:, None]) +
                                  self.coord_loss(face_bbox_size, targets['face_bbox_size'], meta_info['face_bbox_valid'][:, None]))
+            hand_wa_2d_loss = self._direct_hand_wa_2d_loss(
+                joint_proj,
+                targets,
+                meta_info,
+            )
+            if hand_wa_2d_loss is not None:
+                loss.update(hand_wa_2d_loss)
             # change hand target joint_img and joint_trunc according to hand bbox (cfg.output_hm_shape -> downsampled hand bbox space)
             # Dynamic hand-ROI quality gate setup (applied per-coord below).
             roi_gate_on = (getattr(cfg, 'bedlam_use_hand_roi_quality', False) or

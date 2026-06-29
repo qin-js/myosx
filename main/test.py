@@ -44,6 +44,42 @@ def _save_crosspath_npz(path, records):
         print(f"[dump] crosspath arrays -> {path}  (N={next(iter(arrs.values())).shape[0]})")
 
 
+# Per-hand dump keys (UBody grouped-attribution; see docs/wa2d_group_attribution.md).
+# These are (N,21) float arrays + scalar lists + an img_path str list. Kept separate
+# from bootstrap npz so the bootstrap CI tool's 1D-array contract is unchanged.
+_PERHAND_NUMERIC_KEYS = ('hand2d_wa_joints', 'hand2d_abs_joints', 'hand2d_joint_valid',
+                         'hand2d_side', 'hand2d_hand_size', 'hand2d_n_visible')
+
+
+def _save_perhand_npz(path, eval_result):
+    """Dump per-hand (N,21) joint error + hand-attribute arrays for offline grouped
+    attribution. Stacks each list into a 2D/1D array; img_path saved as a string
+    array. Safe no-op when the per-hand keys are absent (non-UBody testsets)."""
+    arrs = {}
+    for k in _PERHAND_NUMERIC_KEYS:
+        v = eval_result.get(k, [])
+        if not v:
+            continue
+        try:
+            arrs[k] = np.stack([np.asarray(x, dtype=np.float64) for x in v], axis=0)
+        except (ValueError, TypeError):
+            continue
+    img_paths = eval_result.get('hand2d_img_path', [])
+    if img_paths:
+        try:
+            arrs['hand2d_img_path'] = np.asarray(img_paths, dtype=str)
+        except (ValueError, TypeError):
+            pass
+    if arrs:
+        lens = {k: v.shape[0] for k, v in arrs.items()}
+        if len(set(lens.values())) != 1:
+            print(f"[dump] skip per-hand arrays with inconsistent lengths: {lens}")
+            return
+        np.savez(path, **arrs)
+        n = next(iter(arrs.values())).shape[0]
+        print(f"[dump] per-hand arrays -> {path}  (N={n}, keys={list(arrs.keys())})")
+
+
 def visualize_debug(inputs, targets, meta_info, save_dir='debug_vis', sample_idx=0):
     """
     可视化调试函数：将 keypoint 和 mesh 投影到原图
@@ -402,6 +438,7 @@ def _run_eval_for_current_checkpoint(args, Tester, result_filename):
     if dump_on:
         _save_bootstrap_npz(osp.join(cfg.result_dir, f'bootstrap_{tag}.npz'), eval_result)
         _save_crosspath_npz(osp.join(cfg.result_dir, f'crosspath_{tag}.npz'), cp_records)
+        _save_perhand_npz(osp.join(cfg.result_dir, f'perhand_{tag}.npz'), eval_result)
     if cfg.dump_encoder:
         _save_crosspath_npz(osp.join(cfg.result_dir, f'encoder_{tag}.npz'), enc_records)
     result_path = _rename_result_file(result_filename)

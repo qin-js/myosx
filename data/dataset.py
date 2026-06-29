@@ -48,4 +48,9 @@ class MultipleDatasets(Dataset):
             else:
                 data_idx = index - self.db_len_cumsum[db_idx-1]
 
-        return self.dbs[db_idx][data_idx]
+        inputs, targets, meta_info = self.dbs[db_idx][data_idx]
+        if 'coco_hand_joint_img' not in targets:
+            targets['coco_hand_joint_img'] = np.zeros((2, 21, 3), dtype=np.float32)
+        if 'coco_hand_joint_trunc' not in targets:
+            targets['coco_hand_joint_trunc'] = np.zeros((2, 21, 1), dtype=np.float32)
+        return inputs, targets, meta_info

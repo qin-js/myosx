@@ -26,6 +26,7 @@ class Config:
     # trainset_3d = ['Human36M']; trainset_2d = ['MSCOCO', 'MPII']; testset = 'EHF'
     # trainset_3d = ['BEDLAM', 'InterHand26M', 'UBody']
     trainset_3d = ['InterHand26M', 'UBody', 'MSCOCO']
+    trainset_3d_sample_prob = {'InterHand26M': 0.35, 'UBody': 0.25, 'MSCOCO': 0.40}
     trainset_2d = []; testset = 'EHF'  # Stage2 冻手训脸=UBody only；手部基线配方=['BEDLAM','InterHand26M']
     continue_train_path = "/workspace/myosx/output/dcnv4_hand_face/model_dump/snapshot_49.pth.tar"
 
@@ -121,12 +122,7 @@ class Config:
     # upper-bound signal when the official test annotations aren't downloaded.
     interhand_eval_split = 'test'
     use_weighted_dataset_sampling = True
-    # trainset_3d_sample_prob = {
-    #     'BEDLAM': 0.6,
-    #     'InterHand26M': 0.4,
-    # }
-    # trainset_3d_sample_prob = {'BEDLAM': 0.20, 'InterHand26M': 0.35, 'UBody': 0.45}
-    trainset_3d_sample_prob = {'InterHand26M': 0.35, 'UBody': 0.25, 'MSCOCO': 0.40}
+
     use_hand_rotmat_pose_loss = False
     hand_rotmat_pose_loss_weight = 1.0
     phase1_epochs = 10
@@ -139,6 +135,12 @@ class Config:
     # the (warm) hand weights — letting a later joint stage warm-start from it.
     # Used by the face-only stage: load _c's hands, freeze them, train only face.
     train_hand_modules = True
+    # WA2D polish stabilization: keep the warm-started hand_position_net fixed
+    # while updating hand_decoder/hand_regressor. This prevents DCNv4 soft-argmax
+    # backward from producing non-finite gradients on rare natural-hand batches.
+    # The module name stays in trainable_module_names so lightweight snapshots
+    # still carry its warm weights.
+    freeze_hand_position_net = False
     # Body-shape T1 micro-experiment gate (default OFF). When True, the two
     # decoupled linear heads body_regressor.shape_out + cam_out are unfrozen
     # (body_regressor otherwise stays fully frozen) so betas/camera can be
@@ -162,6 +164,18 @@ class Config:
     # (tip/j3 are the worst per docs). 1.0/1.0 -> byte-for-byte unchanged.
     hand_tip_loss_weight = 1.0
     hand_j3_loss_weight = 1.0
+    # Direct wrist-aligned natural-hand 2D loss (default OFF). Unlike the
+    # existing hand-space losses, this is computed in full-body heatmap space
+    # before hand-ROI coordinate rewriting: pred/GT are aligned by the wrist and
+    # normalized by the GT hand-keypoint bbox diagonal, matching the UBody
+    # natural-hand [wa] metric. Sources default to UBody+MSCOCO real hand 2D.
+    hand_wa_2d_loss_weight = 0.0
+    hand_wa_2d_loss_sources = 'ubody,mscoco'
+    hand_wa_2d_loss_min_joints = 4
+    hand_wa_2d_j1_weight = 1.0
+    hand_wa_2d_j2_weight = 1.0
+    hand_wa_2d_j3_weight = 1.0
+    hand_wa_2d_tip_weight = 1.0
     # Optional warm-start (only consulted when continue_train is False): load the
     # trained hand/face tensors from a lightweight snapshot WITHOUT resuming the
     # epoch counter or optimizer state. Used to chain training stages

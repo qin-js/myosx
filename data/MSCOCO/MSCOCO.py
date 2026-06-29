@@ -227,6 +227,29 @@ class MSCOCO(torch.utils.data.Dataset):
 
         return bbox, bbox_valid
 
+    def process_coco_hand_joint(self, joint_img, joint_valid, do_flip, img_shape, img2bb_trans, rot):
+        hand_names = (
+            'L_Wrist_Hand',
+            'L_Thumb_1', 'L_Thumb_2', 'L_Thumb_3', 'L_Thumb_4',
+            'L_Index_1', 'L_Index_2', 'L_Index_3', 'L_Index_4',
+            'L_Middle_1', 'L_Middle_2', 'L_Middle_3', 'L_Middle_4',
+            'L_Ring_1', 'L_Ring_2', 'L_Ring_3', 'L_Ring_4',
+            'L_Pinky_1', 'L_Pinky_2', 'L_Pinky_3', 'L_Pinky_4',
+            'R_Wrist_Hand',
+            'R_Thumb_1', 'R_Thumb_2', 'R_Thumb_3', 'R_Thumb_4',
+            'R_Index_1', 'R_Index_2', 'R_Index_3', 'R_Index_4',
+            'R_Middle_1', 'R_Middle_2', 'R_Middle_3', 'R_Middle_4',
+            'R_Ring_1', 'R_Ring_2', 'R_Ring_3', 'R_Ring_4',
+            'R_Pinky_1', 'R_Pinky_2', 'R_Pinky_3', 'R_Pinky_4',
+        )
+        coord = np.concatenate((joint_img[:, :2], np.zeros_like(joint_img[:, :1])), 1)
+        dummy_cam = np.zeros_like(coord)
+        hand_joint_img, _, _, hand_joint_trunc = process_db_coord(
+            coord, dummy_cam, joint_valid, do_flip, img_shape,
+            self.joint_set['flip_pairs'], img2bb_trans, rot,
+            self.joint_set['joints_name'], hand_names)
+        return hand_joint_img.reshape(2, 21, 3), hand_joint_trunc.reshape(2, 21, 1)
+
     def __len__(self):
         return len(self.datalist)
 
@@ -293,10 +316,14 @@ class MSCOCO(torch.utils.data.Dataset):
 
             # coco gt
             dummy_coord = np.zeros((self.joint_set['joint_num'], 3), dtype=np.float32)
-            joint_img = data['joint_img']
+            raw_joint_img = data['joint_img']
+            raw_joint_valid = data['joint_valid']
+            coco_hand_joint_img, coco_hand_joint_trunc = self.process_coco_hand_joint(
+                raw_joint_img, raw_joint_valid, do_flip, img_shape, img2bb_trans, rot)
+            joint_img = raw_joint_img
             joint_img = np.concatenate((joint_img[:, :2], np.zeros_like(joint_img[:, :1])), 1)  # x, y, dummy depth
             joint_img, joint_cam, joint_valid, joint_trunc = process_db_coord(joint_img, dummy_coord,
-                                                                              data['joint_valid'], do_flip, img_shape,
+                                                                              raw_joint_valid, do_flip, img_shape,
                                                                               self.joint_set['flip_pairs'],
                                                                               img2bb_trans, rot,
                                                                               self.joint_set['joints_name'],
@@ -359,6 +386,8 @@ class MSCOCO(torch.utils.data.Dataset):
                        'smplx_joint_cam': smplx_joint_cam,
                        'smplx_pose': smplx_pose, 'smplx_shape': smplx_shape, 'smplx_expr': smplx_expr,
                        'smplx_cam_trans': smplx_cam_trans, 'smplx_mesh_cam': smplx_mesh_cam_orig,
+                       'coco_hand_joint_img': coco_hand_joint_img,
+                       'coco_hand_joint_trunc': coco_hand_joint_trunc,
                        'lhand_bbox_center': lhand_bbox_center,
                        'lhand_bbox_size': lhand_bbox_size, 'rhand_bbox_center': rhand_bbox_center,
                        'rhand_bbox_size': rhand_bbox_size,

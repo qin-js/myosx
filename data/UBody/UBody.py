@@ -363,6 +363,29 @@ class UBody_Part(torch.utils.data.Dataset):
 
         return bbox, bbox_valid
 
+    def process_coco_hand_joint(self, joint_img, joint_valid, do_flip, img_shape, img2bb_trans, rot):
+        hand_names = (
+            'L_Wrist_Hand',
+            'L_Thumb_1', 'L_Thumb_2', 'L_Thumb_3', 'L_Thumb_4',
+            'L_Index_1', 'L_Index_2', 'L_Index_3', 'L_Index_4',
+            'L_Middle_1', 'L_Middle_2', 'L_Middle_3', 'L_Middle_4',
+            'L_Ring_1', 'L_Ring_2', 'L_Ring_3', 'L_Ring_4',
+            'L_Pinky_1', 'L_Pinky_2', 'L_Pinky_3', 'L_Pinky_4',
+            'R_Wrist_Hand',
+            'R_Thumb_1', 'R_Thumb_2', 'R_Thumb_3', 'R_Thumb_4',
+            'R_Index_1', 'R_Index_2', 'R_Index_3', 'R_Index_4',
+            'R_Middle_1', 'R_Middle_2', 'R_Middle_3', 'R_Middle_4',
+            'R_Ring_1', 'R_Ring_2', 'R_Ring_3', 'R_Ring_4',
+            'R_Pinky_1', 'R_Pinky_2', 'R_Pinky_3', 'R_Pinky_4',
+        )
+        coord = np.concatenate((joint_img[:, :2], np.zeros_like(joint_img[:, :1])), 1)
+        dummy_cam = np.zeros_like(coord)
+        hand_joint_img, _, _, hand_joint_trunc = process_db_coord(
+            coord, dummy_cam, joint_valid, do_flip, img_shape,
+            self.joint_set['flip_pairs'], img2bb_trans, rot,
+            self.joint_set['joints_name'], hand_names)
+        return hand_joint_img.reshape(2, 21, 3), hand_joint_trunc.reshape(2, 21, 1)
+
     def __len__(self):
         return len(self.datalist)
 
@@ -429,10 +452,14 @@ class UBody_Part(torch.utils.data.Dataset):
 
             # coco gt
             dummy_coord = np.zeros((self.joint_set['joint_num'], 3), dtype=np.float32)
-            joint_img = data['joint_img']
+            raw_joint_img = data['joint_img']
+            raw_joint_valid = data['joint_valid']
+            coco_hand_joint_img, coco_hand_joint_trunc = self.process_coco_hand_joint(
+                raw_joint_img, raw_joint_valid, do_flip, img_shape, img2bb_trans, rot)
+            joint_img = raw_joint_img
             joint_img = np.concatenate((joint_img[:, :2], np.zeros_like(joint_img[:, :1])), 1)  # x, y, dummy depth
             joint_img, joint_cam, joint_valid, joint_trunc = process_db_coord(joint_img, dummy_coord,
-                                                                              data['joint_valid'], do_flip, img_shape,
+                                                                              raw_joint_valid, do_flip, img_shape,
                                                                               self.joint_set['flip_pairs'],
                                                                               img2bb_trans, rot,
                                                                               self.joint_set['joints_name'],
@@ -491,6 +518,8 @@ class UBody_Part(torch.utils.data.Dataset):
             targets = {'joint_img': joint_img, 'joint_cam': joint_cam, 'smplx_joint_img': smplx_joint_img,
                        'smplx_joint_cam': smplx_joint_cam, 'smplx_pose': smplx_pose, 'smplx_shape': smplx_shape,
                        'smplx_expr': smplx_expr, 'smplx_cam_trans': smplx_cam_trans,
+                       'coco_hand_joint_img': coco_hand_joint_img,
+                       'coco_hand_joint_trunc': coco_hand_joint_trunc,
                        'smplx_mesh_cam': smplx_mesh_cam_orig, 'lhand_bbox_center': lhand_bbox_center,
                        'lhand_bbox_size': lhand_bbox_size, 'rhand_bbox_center': rhand_bbox_center,
                        'rhand_bbox_size': rhand_bbox_size, 'face_bbox_center': face_bbox_center,
@@ -703,7 +732,17 @@ class UBody(Dataset):
                        'hand2d_pck01_abs': [], 'hand2d_pck02_abs': [], 'hand2d_nme_abs': [],
                        'hand2d_pck01_wa': [], 'hand2d_pck02_wa': [], 'hand2d_nme_wa': [],
                        'hand2d_pck02_abs_l': [], 'hand2d_pck02_abs_r': [],
-                       'hand2d_nme_wa_l': [], 'hand2d_nme_wa_r': [], 'hand2d_n': []}
+                       'hand2d_nme_wa_l': [], 'hand2d_nme_wa_r': [], 'hand2d_n': [],
+                       # --- Per-hand, per-joint arrays for grouped attribution
+                       # (see docs/wa2d_group_attribution.md). Each entry is appended
+                       # inside the `if v[0]:` block (wrist valid), so these stay
+                       # 1:1 aligned with hand2d_nme_wa / hand2d_nme_wa_{l,r}.
+                       # hand2d_*_joints / hand2d_joint_valid are (21,) per hand;
+                       # the rest are scalars. hand2d_img_path is a str per hand.
+                       'hand2d_wa_joints': [], 'hand2d_abs_joints': [],
+                       'hand2d_joint_valid': [], 'hand2d_side': [],
+                       'hand2d_hand_size': [], 'hand2d_n_visible': [],
+                       'hand2d_img_path': []}
         for name in ('thumb', 'index', 'middle', 'ring', 'pinky'):
             eval_result['hand2d_wa_nme_' + name] = []
             eval_result['hand2d_wa_n_' + name] = []
@@ -891,6 +930,19 @@ class UBody(Dataset):
                     eval_result['hand2d_pck02_wa'].append(float((ew < 0.2).mean()))
                     eval_result['hand2d_nme_wa'].append(float(ew.mean()))
                     eval_result['hand2d_nme_wa_' + side].append(float(ew.mean()))
+                    # Per-hand, per-joint dump for grouped attribution. err_wa is
+                    # (21,) wrist-aligned normalized error over ALL 21 joints (incl.
+                    # wrist itself at idx 0); err_abs is the abs (placement) error.
+                    # span = GT hand-kpt bbox diagonal (hand-size proxy); v is the
+                    # (21,) GT visibility mask; side 0=left 1=right. Appended only
+                    # when wrist valid -> stays aligned with hand2d_nme_wa above.
+                    eval_result['hand2d_wa_joints'].append(err_wa.astype(np.float32))
+                    eval_result['hand2d_abs_joints'].append(err_abs.astype(np.float32))
+                    eval_result['hand2d_joint_valid'].append(v.astype(np.float32))
+                    eval_result['hand2d_side'].append(0.0 if side == 'l' else 1.0)
+                    eval_result['hand2d_hand_size'].append(span)
+                    eval_result['hand2d_n_visible'].append(float(int(v.sum())))
+                    eval_result['hand2d_img_path'].append(annot['img_path'])
                     for name, finger_idxs in self._hand2d_finger_idx.items():
                         vf = v[finger_idxs]
                         if int(vf.sum()) >= 2:

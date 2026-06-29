@@ -5,6 +5,26 @@ from config import cfg
 import torch
 
 DEFAULT_PHASE1_EPOCHS = 10
+HAND_WA_2D_VALID_SOURCES = {'ubody', 'mscoco', 'coco', 'interhand', 'all'}
+
+
+def _normalize_hand_wa_2d_sources(source_cfg):
+    if isinstance(source_cfg, str):
+        raw = source_cfg.replace('，', ',').replace('、', ',')
+        sources = [s.strip().lower() for s in raw.split(',') if s.strip()]
+    else:
+        sources = [str(s).strip().lower() for s in source_cfg if str(s).strip()]
+
+    invalid = sorted(set(sources) - HAND_WA_2D_VALID_SOURCES)
+    if invalid:
+        raise ValueError(
+            'Invalid hand_wa_2d_loss_sources %s; valid sources are %s' % (
+                ','.join(invalid), ','.join(sorted(HAND_WA_2D_VALID_SOURCES))))
+    if not sources:
+        raise ValueError('hand_wa_2d_loss_sources must contain at least one source')
+    if 'all' in sources and len(set(sources)) > 1:
+        raise ValueError("hand_wa_2d_loss_sources cannot combine 'all' with specific sources")
+    return ','.join(sources)
 
 
 def _source_masks(meta_info):
@@ -87,6 +107,88 @@ def _raise_nonfinite_loss(loss, total_loss, meta_info, logger, epoch, itr):
     raise RuntimeError(msg)
 
 
+def _raise_nonfinite_trainable_params(model, logger, epoch, itr):
+    bad = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        data = param.detach()
+        if torch.isfinite(data).all():
+            continue
+        n_bad = (~torch.isfinite(data)).sum().item()
+        bad.append((name, n_bad, data.numel()))
+        if len(bad) >= 10:
+            break
+
+    if not bad:
+        return
+
+    msg = 'Non-finite trainable parameters after optimizer step at epoch %d itr %d. %s' % (
+        epoch,
+        itr,
+        ' '.join('%s=%d/%d' % item for item in bad),
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
+
+
+def _raise_nonfinite_trainable_grads(model, logger, epoch, itr, stage):
+    bad = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad or param.grad is None:
+            continue
+        grad = param.grad.detach()
+        if torch.isfinite(grad).all():
+            continue
+        n_bad = (~torch.isfinite(grad)).sum().item()
+        bad.append((name, n_bad, grad.numel()))
+        if len(bad) >= 10:
+            break
+
+    if not bad:
+        return
+
+    msg = 'Non-finite trainable gradients %s at epoch %d itr %d. %s' % (
+        stage,
+        epoch,
+        itr,
+        ' '.join('%s=%d/%d' % item for item in bad),
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
+
+
+def _clip_grad_norm_checked(params, max_norm, group_name, logger, epoch, itr):
+    params = list(params)
+    if not params:
+        return None
+    try:
+        return torch.nn.utils.clip_grad_norm_(
+            params,
+            max_norm=max_norm,
+            error_if_nonfinite=True,
+        )
+    except RuntimeError as exc:
+        finite_stats = []
+        for param in params:
+            if param.grad is None:
+                continue
+            grad = param.grad.detach()
+            if not torch.isfinite(grad).all():
+                continue
+            finite_stats.append(float(grad.abs().max().detach().cpu()))
+        max_abs = max(finite_stats) if finite_stats else float('nan')
+        msg = 'Non-finite grad norm while clipping %s at epoch %d itr %d. max_finite_abs_grad=%s. %s' % (
+            group_name,
+            epoch,
+            itr,
+            max_abs,
+            str(exc),
+        )
+        logger.error(msg)
+        raise RuntimeError(msg)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_ids', type=str, dest='gpu_ids')
@@ -133,12 +235,32 @@ def parse_args():
                              'smplx_joint_img)的权重；默认 1.0=关闭')
     parser.add_argument('--hand_j3_loss_weight', type=float, default=1.0,
                         help='手指 j3(_3)在 hand-space 2D loss 的权重；默认 1.0=关闭')
+    parser.add_argument('--hand_wa_2d_loss_weight', type=float, default=0.0,
+                        help='direct wrist-aligned hand 2D loss 权重；在 full-body heatmap 坐标中'
+                             '按 GT 手 bbox diag 归一化，默认 0=关闭')
+    parser.add_argument('--hand_wa_2d_loss_sources', type=str, default='ubody,mscoco',
+                        help='启用 direct wrist-aligned hand 2D loss 的数据源，逗号分隔；'
+                             '可选 ubody,mscoco,interhand，默认 ubody,mscoco')
+    parser.add_argument('--hand_wa_2d_loss_min_joints', type=int, default=4,
+                        help='direct wrist-aligned hand 2D loss 每只手至少需要的可见关节点数')
+    parser.add_argument('--hand_wa_2d_j1_weight', type=float, default=1.0,
+                        help='direct wrist-aligned hand 2D loss 中每根手指 j1 的权重；默认 1.0')
+    parser.add_argument('--hand_wa_2d_j2_weight', type=float, default=1.0,
+                        help='direct wrist-aligned hand 2D loss 中每根手指 j2 的权重；默认 1.0')
+    parser.add_argument('--hand_wa_2d_j3_weight', type=float, default=1.0,
+                        help='direct wrist-aligned hand 2D loss 中每根手指 j3 的权重；默认 1.0')
+    parser.add_argument('--hand_wa_2d_tip_weight', type=float, default=1.0,
+                        help='direct wrist-aligned hand 2D loss 中每根手指 tip 的权重；默认 1.0')
     parser.add_argument('--train_face_modules', action='store_true',
                         help='默认冻结 face 分支；需要 UBody face/expression 微调时显式开启')
     parser.add_argument('--no_train_hand_modules', action='store_true',
                         help='冻结手部分支（face-only 阶段用）：手部三件套不进优化器、'
                              '保持已加载的手权重不动；其名字仍在 snapshot 里保存，'
                              '便于后续联合阶段暖启动')
+    parser.add_argument('--freeze_hand_position_net', action='store_true',
+                        help='WA2D polish 稳定项：冻结已 warm-start 的 hand_position_net，'
+                             '只训练 hand_decoder/hand_regressor，避免 DCNv4 position head '
+                             '在自然手 batch 上反传出非有限梯度')
     parser.add_argument('--init_trained_path', type=str, default='',
                         help='非续训(continue_train=False)时，额外暖加载一个 lightweight '
                              'snapshot 的已训练手/脸模块（不续 epoch/optimizer）；用于阶段衔接')
@@ -232,7 +354,8 @@ def _configure_training_phase(trainer, phase, remaining_epochs):
     # (face-only stage) the hand modules are frozen elsewhere and simply never
     # enter the optimizer here. Default path is unchanged.
     if getattr(cfg, 'train_hand_modules', True):
-        posnet_modules.append('hand_position_net')
+        if not getattr(cfg, 'freeze_hand_position_net', False):
+            posnet_modules.append('hand_position_net')
         normal_modules.append('hand_decoder')
         if phase == 1:
             if cfg.phase1_train_hand_regressor:
@@ -351,6 +474,7 @@ def main():
         phase1_train_hand_regressor=not args.no_phase1_hand_regressor,
         train_face_modules=args.train_face_modules,
         train_hand_modules=not args.no_train_hand_modules,
+        freeze_hand_position_net=args.freeze_hand_position_net,
         use_weighted_dataset_sampling=not args.disable_weighted_dataset_sampling,
         posnet_lr_mult=args.posnet_lr_mult,
         posnet_grad_clip=args.posnet_grad_clip,
@@ -402,6 +526,21 @@ def main():
     # reads these in __init__ to build the per-joint weight buffers.
     cfg.hand_tip_loss_weight = args.hand_tip_loss_weight
     cfg.hand_j3_loss_weight = args.hand_j3_loss_weight
+    cfg.hand_wa_2d_loss_weight = args.hand_wa_2d_loss_weight
+    cfg.hand_wa_2d_loss_sources = _normalize_hand_wa_2d_sources(args.hand_wa_2d_loss_sources)
+    cfg.hand_wa_2d_loss_min_joints = args.hand_wa_2d_loss_min_joints
+    wa_level_weights = {
+        'hand_wa_2d_j1_weight': args.hand_wa_2d_j1_weight,
+        'hand_wa_2d_j2_weight': args.hand_wa_2d_j2_weight,
+        'hand_wa_2d_j3_weight': args.hand_wa_2d_j3_weight,
+        'hand_wa_2d_tip_weight': args.hand_wa_2d_tip_weight,
+    }
+    for name, value in wa_level_weights.items():
+        if not value >= 0:
+            raise ValueError('%s must be non-negative, got %s' % (name, value))
+        setattr(cfg, name, value)
+    if sum(wa_level_weights.values()) <= 0:
+        raise ValueError('At least one hand_wa_2d level weight must be positive')
 
     if args.continue_train and args.continue_train_path:
         cfg.continue_train_path = args.continue_train_path
@@ -431,7 +570,8 @@ def main():
                         f'{cfg.lr * cfg.lr_mult} (回归网络)')
     trainer.logger.info(f'  Phase 1 epochs: {cfg.phase1_epochs}, '
                         f'phase1 hand_regressor: {cfg.phase1_train_hand_regressor}, '
-                        f'train face modules: {cfg.train_face_modules}')
+                        f'train face modules: {cfg.train_face_modules}, '
+                        f'freeze hand position net: {cfg.freeze_hand_position_net}')
     trainer.logger.info(f'  📦 Batch size: {cfg.train_batch_size} x {cfg.num_gpus} GPU')
     trainer.logger.info(f'  🔄 Epochs: {trainer.start_epoch} → {cfg.end_epoch}')
     trainer.logger.info('=' * 60 + '\n')
@@ -472,6 +612,7 @@ def main():
             total_loss = sum(loss[k] for k in loss if not k.startswith('_'))
             _raise_nonfinite_loss(loss, total_loss, meta_info, trainer.logger, epoch, itr)
             total_loss.backward()
+            _raise_nonfinite_trainable_grads(trainer.model, trainer.logger, epoch, itr, 'after backward')
 
             # ---- 梯度裁剪（防止新模块初期梯度爆炸）----
             # position_nets (soft-argmax, diverges mid-epoch) get a separate,
@@ -480,14 +621,30 @@ def main():
             if cfg.posnet_grad_clip > 0:
                 posnet_params = _grad_params_for_groups(trainer.optimizer, {'position_nets'})
                 if posnet_params:
-                    torch.nn.utils.clip_grad_norm_(posnet_params, max_norm=cfg.posnet_grad_clip)
+                    _clip_grad_norm_checked(
+                        posnet_params,
+                        cfg.posnet_grad_clip,
+                        'position_nets',
+                        trainer.logger,
+                        epoch,
+                        itr,
+                    )
             if args.grad_clip > 0:
                 other_params = _grad_params_for_groups(
                     trainer.optimizer, {'hand_face_new_modules', 'regressors', 'body_shape', 'hand_roi'})
                 if other_params:
-                    torch.nn.utils.clip_grad_norm_(other_params, max_norm=args.grad_clip)
+                    _clip_grad_norm_checked(
+                        other_params,
+                        args.grad_clip,
+                        'non_position_groups',
+                        trainer.logger,
+                        epoch,
+                        itr,
+                    )
+            _raise_nonfinite_trainable_grads(trainer.model, trainer.logger, epoch, itr, 'after clipping')
 
             trainer.optimizer.step()
+            _raise_nonfinite_trainable_params(trainer.model, trainer.logger, epoch, itr)
             trainer.scheduler.step()
             trainer.gpu_timer.toc()
 
