@@ -2,6 +2,16 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-07-01
+
+### PoseurDecoder 隔离实验（itr1500，inconclusive）+ DCNv4 NaN 因果模型【修正】
+
+**poseur_iso 结果**（`--use_poseur_hand_decoder`，warm-start snap2 但 PoseurDecoder 结构不符 → decoder 从**随机初始化**；WA2D 关，日志确认 `set hand_wa_2d_loss_weight to 0.0`）：itr1500 同子集(3200 手) InterHand PA **29.14** / wrist-rel 70.05，vs OSX-ft itr1500 15.53、snap2 15.85。**这不是判决**：PoseurDecoder 冷启、仅 1/3 epoch，对暖/全训 decoder 不公平，信息量≈0；loss 在降。wrist-rel 70 反低于 80-81 有点意思（全局好、局部 PA 差），但欠训 checkpoint 不可读。itr1710 在 `hand_position_net.dcnv4_blocks.0` NaN（未带 `--skip_nonfinite_grad` → abort）。
+
+**【修正 6-30 的过度说法 "DCNv4 broadly fragile"】**：DCNv4 头历史上（interhand_bedlam_c / joint_polish_f，暖 3 层 HandDecoder、无 WA2D）训 **10+ epoch 从不炸**。它**只在大上游梯度经未-detach 的 `query_init`（`model_core.py:725` 传 `hand_img_feat_joints`）回流进 DCNv4 反向时溢出**。两类 NaN 共因 = "大梯度进 DCNv4"：① WA2D 的 `1/diag` 尖峰经 decoder 回传；② 冷启随机 6 层 PoseurDecoder 的早期大梯度。→ **poseur_iso 的 NaN 是冷启瞬态，非 WA2D（已确认 weight=0.0）、非 DCNv4 固有缺陷**；decoder 暖起来梯度变小、预期 NaN 自停。准确表述：DCNv4 反向在常规区间（暖浅 decoder、无 WA2D）稳，仅大上游梯度下溢出。
+
+**下一步**：带 `--skip_nonfinite_grad` 重跑（poseur_iso2）熬过冷启、训到收敛（4 epoch）再对 OSX-ft 16.29 / snap2 16.78。看 `skipped=N`：集中早期后停 = 坐实冷启瞬态、能跑到收敛拿真数；持续到晚 = DCNv4×深 decoder 有更深不稳，再议。公平性 caveat：PoseurDecoder 无法暖启（无兼容预训练权重），只能"从零训到收敛"对暖启基线——追平=架构强，没追平=冷启 handicap 与架构差分不开。备选解法（未采用）：detach `query_init` / LR warmup 压早期梯度。
+
 ## 2026-06-30
 
 ### WA2D 触顶 + NaN 高置信根因定位 + 梯度稳定补丁
