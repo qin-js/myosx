@@ -518,9 +518,17 @@ def get_model(mode):
         body_position_net.apply(init_weights)
         body_rotation_net.apply(init_weights)
         box_net.apply(init_weights)
-        encoder_pretrained_model_path = torch.load(cfg.encoder_pretrained_model_path)['state_dict']
-        vit.load_state_dict(encoder_pretrained_model_path, strict=False)
-        print(f"Initialize backbone from {cfg.encoder_pretrained_model_path}")
+        # The frozen encoder is overwritten from --pretrained_model_path
+        # (osx_l.pth.tar) in base._load_pretrained_frozen right after build, so this
+        # separate ViT init is redundant for track B and is skipped when the file is
+        # absent (osx_vit_l.pth is not part of the track-B asset set).
+        if os.path.exists(cfg.encoder_pretrained_model_path):
+            encoder_pretrained_model_path = torch.load(cfg.encoder_pretrained_model_path)['state_dict']
+            vit.load_state_dict(encoder_pretrained_model_path, strict=False)
+            print(f"Initialize backbone from {cfg.encoder_pretrained_model_path}")
+        else:
+            print(f"[track B] encoder pretrained not found ({cfg.encoder_pretrained_model_path}); "
+                  f"skipping ViT init — encoder loads from --pretrained_model_path instead")
 
         # hand
         hand_position_net.apply(init_weights)
