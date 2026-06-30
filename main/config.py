@@ -148,6 +148,13 @@ class Config:
     # False every related branch is a no-op (prefixes empty) — hand/face
     # training is byte-for-byte unchanged. See docs/experiment_log.md 2026-06-25.
     train_body_shape = False
+    # Decoder isolation experiment (default OFF, hand only). When True the
+    # train/test1 hand path swaps our HandDecoder for the OSX-style PoseurDecoder
+    # (6-layer deformable-DETR with ITERATIVE reference-point refinement, which
+    # HandDecoder lacks). Same (feats, coord_init, query_init)->features interface,
+    # so the forward is unchanged; isolates whether iterative refinement helps.
+    # OFF -> HandDecoder, byte-for-byte unchanged. Train and test1 MUST match.
+    use_poseur_hand_decoder = False
     # Route C micro-experiment gate (default OFF). When True, hand_roi_net (the
     # feature-level hand crop+upsample, normally part of the frozen backbone) is
     # moved into the trainable set so it can co-adapt with the hand

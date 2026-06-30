@@ -235,6 +235,9 @@ def parse_args():
                              '默认关闭，关闭时对手/脸训练零影响')
     parser.add_argument('--body_shape_lr', type=float, default=1e-5,
                         help='body-shape T1 的 shape_out/cam_out 学习率（仅 --train_body_shape 时生效）')
+    parser.add_argument('--use_poseur_hand_decoder', action='store_true',
+                        help='decoder 隔离实验：手部用 OSX 式 PoseurDecoder(6 层迭代精修) 替代 '
+                             'HandDecoder；默认关闭=HandDecoder。train 与 test1 必须一致')
     parser.add_argument('--train_hand_roi', action='store_true',
                         help='路线 C：解冻 hand_roi_net，与 hand decoder/regressor 小 LR 共适应'
                              '（box_net 仍冻结）；默认关闭，关闭时对现有训练零影响')
@@ -533,6 +536,9 @@ def main():
     if args.train_body_shape:
         cfg.train_body_shape = True
     cfg.body_shape_lr = args.body_shape_lr
+    # Decoder isolation experiment: must be set BEFORE _make_model (get_model reads
+    # cfg.use_poseur_hand_decoder to pick HandDecoder vs PoseurDecoder).
+    cfg.use_poseur_hand_decoder = args.use_poseur_hand_decoder
 
     # Route C (gated). Must be set BEFORE _make_model builds the Model, which
     # reads cfg.train_hand_roi to move hand_roi_net into the trainable lists.

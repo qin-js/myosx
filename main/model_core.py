@@ -1112,17 +1112,37 @@ def get_model(mode):
         
         # Hand Decoder
         # 手部解码器
-        hand_decoder = HandDecoder(
-            d_model=256,                          # 与 hand_conv 输出通道一致
-            nhead=8,
-            num_decoder_layers=3,
-            dim_feedforward=1024,
-            dropout=0.1,
-            n_levels=3,             # 多尺度特征层数
-            n_points=4,
-            num_joints=cfg.hand_pos_joint_num,    # 通常 20
-            feat_channels=neck_channels,               # ROI 特征通道 (如 768)
-        )
+        if getattr(cfg, 'use_poseur_hand_decoder', False):
+            # Isolation experiment: OSX-style PoseurDecoder (6-layer deformable-DETR
+            # with iterative reference-point refinement). Same (feats, coord_init,
+            # query_init)->features interface as HandDecoder, so forward (L725) is
+            # unchanged. NOTE: it returns refined FEATURES like HandDecoder; the
+            # per-layer refined coords (vit.py:260) are still discarded (no aux coord
+            # supervision yet) -> this tests iterative refinement on the FEATURE path
+            # alone. PoseurDecoder iterates all `neck_channels` levels, matching the
+            # hand_feats passed at L725 (same wiring as the mode=='test' branch).
+            hand_decoder = PoseurDecoder(
+                in_channels_list=neck_channels,
+                embed_dim=256,
+                num_heads=8,
+                num_layers=6,
+                num_points=4,
+                num_queries=cfg.hand_pos_joint_num,
+                ffn_dim=1024,
+                use_internal_backbone=False,
+            )
+        else:
+            hand_decoder = HandDecoder(
+                d_model=256,                          # 与 hand_conv 输出通道一致
+                nhead=8,
+                num_decoder_layers=3,
+                dim_feedforward=1024,
+                dropout=0.1,
+                n_levels=3,             # 多尺度特征层数
+                n_points=4,
+                num_joints=cfg.hand_pos_joint_num,    # 通常 20
+                feat_channels=neck_channels,               # ROI 特征通道 (如 768)
+            )
 
     # 3. Face
     if mode == 'test':

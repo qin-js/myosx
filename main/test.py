@@ -241,6 +241,8 @@ def parse_args():
                              '每个 checkpoint 的结果会保存到 result/<checkpoint_name>/')
     parser.add_argument('--max_eval_iters', type=int, default=-1,
                         help='只评估前 N 个 batch（快速查看用）；<=0 表示评估整个 testset')
+    parser.add_argument('--use_poseur_hand_decoder', action='store_true',
+                        help='decoder 隔离实验：手部用 PoseurDecoder 评测（必须与训练该 checkpoint 时一致）')
     parser.add_argument('--dump_analysis', action='store_true',
                         help='额外 dump 逐样本/逐手指标到 result_dir 下的 '
                              'bootstrap_<testset>.npz 与 crosspath_<testset>.npz，'
@@ -471,6 +473,9 @@ def main():
     if hint_kwargs:
         cfg.set_additional_args(**hint_kwargs)
     cfg.interhand_eval_split = args.interhand_eval_split
+    # Decoder isolation experiment: must match how the checkpoint was trained, set
+    # before Tester._make_model (get_model('test1') reads it).
+    cfg.use_poseur_hand_decoder = args.use_poseur_hand_decoder
     cudnn.benchmark = True
     from common.base import Tester
 
