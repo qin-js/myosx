@@ -8,6 +8,37 @@
 
 ---
 
+## 0‴. 2026-06-30 更新(三)：公平基线结果 + decoder 根因 + 能否超过 OSX 的概率判断
+
+### 公平基线结果：OSX decoder 同等条件略胜、且更 sample-efficient
+
+同一 400-iter 子集(3200 手，L:680/R:2520)：**OSX-ft(itr1500，1/3 epoch) PA 15.53 vs 我们 snap2 15.85 → OSX-ft 领先 0.32mm，且未收敛**(wrist-rel 80.80 vs 81.11 同向)。子集偏易(我们全量 16.78)，但**同口径下 OSX 仍在前**。backbone 冻结、coord loss 相同 → 差距是 **decoder 架构/实现**，非 loss/数据。**"−14% 是我们 decoder 的方法贡献"守不住**；待 OSX-ft 收敛 + 全量复评再定幅度。
+
+### Decoder 根因（代码审查，杠杆排名）
+
+1. **我们的 decoder 是"特征精修器"不是"坐标精修器"**：被监督的 2D 手坐标全来自 `hand_position_net` soft-argmax(`model_core.py:721`)；`hand_decoder`(725) 只输出**特征**喂 regressor，**无坐标输出、无坐标监督**，唯一梯度是 pose→FK 间接。OSX Poseur **每层回归坐标 + 每层 RLE/坐标 aux 监督**(`hand_decoder.py:86-88,118-144`)。→ 稀疏间接 vs 密集直接监督，解释 sample-efficiency 差。
+2. **参考点全程不迭代**(`my_decoder.py:661-672`)：从 `coord_init` 算一次、所有层共用、layer 只返回特征；OSX 每层用 offset 更新参考点。3 层都盯同一 soft-argmax 初始点，深层纠不了坏 init（**末端最吃亏**=distal gap）。
+3. **soft-argmax 16³ 量化瓶颈**(`output_hand_hm_shape=16×16×16`)：指尖精度受限；OSX 回归连续坐标。
+4. **3 层 vs OSX 6 层**(`model_core.py:1118` vs `hand_decoder.py:120`)。
+5. **over-engineered topo/occlusion 模块**(`my_decoder.py:454-458`)：OSX 层是干净 self-attn+deformable+FFN；我们多了 `HandTopologyAttention`+`ImplicitOcclusionModule`，decoder 还输 → **高度怀疑帮倒忙，头号 ablation**。
+
+最高杠杆单点：**把 decoder 改成迭代坐标精修 + 每层 aux 坐标监督(deformable-DETR/Poseur 式)**，一次解决 1/2/3、直接打 distal。捷径待查：`model_core.py:1099` 有现成 `PoseurDecoder`，若是 OSX decoder 的 port 可直接切/对比。
+
+### 能否超过 OSX 的概率判断
+
+**结构天花板**：backbone 与 OSX 逐比特一致 → 同一份特征，**OSX 性能 ≈ 我们在其域上的天花板**；系统性超过需 decoder 严格更强，否则高概率结局是**追平**而非超过。
+
+| 域 | 追平 OSX | 明显超过 | 仍输 |
+|---|---:|---:|---:|
+| 实验室手 InterHand | ~50% | ~30%（叠 OSX 没用的 RLE 有上行）| ~20% |
+| 自然手 UBody `[wa]` | ~40-45% | **~15%**（OSX in-domain + 共享冻结特征，主场难）| ~40-45% |
+
+- **两域同时明显超过 ≈ 10-15%**；**两域追平(或一超一平) ≈ 40-50%，是高概率结局。**
+- **不要押"两域都超 OSX"(~12%)。** 高概率且可发表的故事 = **in-domain 追平 OSX + held-out(HInt) 赢 + 干净 from-scratch 复现 + 诚实分析**。HInt 是我们真有头寸、OSX 没利用的地方。
+- 抬概率三件事(性价比序)：① decoder 迭代坐标精修 + aux 监督；② **叠 RLE loss**(OSX 看家武器、我们没用，最可能让 InterHand 真反超)；③ ablate topo/occlusion(免费验证是否帮倒忙)。
+
+---
+
 ## 0″. 2026-06-30 更新：WA2D 收口 → 主线转 InterHand 公平基线
 
 **UBody `[wa]` 那 0.010 的 direct-loss 攻坚（tipw + WA2D，6-28~30）已收口为负结果**（完整记录见 `experiment_log.md` 2026-06-30）：三堵墙——指标天花板（最优 frz500 仍 +0.0068、88% distal）、数值 NaN（根在 DCNv4 反向 kernel、与 weight 无关）、InterHand 侵蚀（frz500 PA=17.00 踩 kill 线）。**§3-§4 的"路线 C / direct 2D 监督"主线到此为止；下面 §1-§7 作历史保留。** 新主线 = **把 InterHand −14% 从"不公平"变"公平/诚实"**，这是论文真正的成败点。

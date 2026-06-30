@@ -95,6 +95,14 @@ python train.py --gpu_ids 0 --lr 1e-5 --train_batch_size 64 --num_thread 8 \
 
 **停止/判定**：2 epoch 足够（13 参数极快）；BEDLAM body type 单一，AGORA 量化开始退=过拟，停。AGORA 改善+demo 肉眼变好+手不动→留作配图；AGORA 动但 demo 无肉眼变化→诚实记"合成口径动、真实定性有限"，别 oversell。
 
+### track-B 公平基线首个结果 + decoder 根因 + 概率判断
+
+**同子集对比（400-iter 子集，3200 手）**：`osx_fairbase` itr1500（1/3 epoch，未收敛）InterHand PA **15.53** vs 我们 `snap2` 在**同一子集** **15.85** → OSX-ft 领先 0.32mm（wrist-rel 80.80 vs 81.11）。子集偏易（snap2 全量 16.78），但同口径下 OSX 仍在前。→ backbone 冻结 + coord loss 相同 → **差距是 decoder 架构/实现，非 loss/数据**；"−14% 是我们 decoder 方法贡献"守不住，待 OSX-ft 收敛 + 全量复评定幅度。
+
+**Decoder 代码审查根因**（详见 `post_stage3_roadmap.md` §0‴）：① 我们 decoder 是"特征精修器"非"坐标精修器"——`hand_decoder`(model_core:725) 只输出特征、无坐标输出/监督，被监督的 2D 坐标全来自 soft-argmax(721)，唯一梯度是 pose→FK 间接；OSX Poseur 每层回归坐标+每层 aux 监督。② 参考点全程不迭代(my_decoder:661-672)。③ soft-argmax 16³ 量化。④ 3 层 vs OSX 6 层。⑤ over-engineered topo/occlusion(my_decoder:454-458)，头号 ablation。最高杠杆：改迭代坐标精修+每层 aux 监督；捷径查 `model_core:1099` 的 `PoseurDecoder`。
+
+**概率判断**（结构天花板：冻结 backbone 逐比特同 OSX → OSX≈我们在其域天花板）：修 decoder 后 InterHand 追平 ~50%/超过 ~30%；UBody `[wa]` 追平 ~40-45%/超过 ~15%；**两域同时超过 ~10-15%，两域追平 ~40-50%(高概率)**。建议不押"两域都超 OSX"，主打 in-domain 追平 + held-out(HInt) 赢 + 诚实复现；抬概率：迭代坐标精修 / 叠 RLE loss / ablate topo-occlusion。
+
 ## 2026-06-29
 
 ### Group attribution + direct WA2D loss 实验（注：bootstrap/NaN 已于 2026-06-30 补测并部分推翻本条，见上）
