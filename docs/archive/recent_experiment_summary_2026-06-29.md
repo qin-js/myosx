@@ -1,10 +1,19 @@
 # Recent Experiment Summary: TipW / WA2D / Group Attribution
 
+> **已归档 2026-06-30**：本文的实验结果已并入 `docs/experiment_log.md`（2026-06-29 条目）。本文留作当时的详细记录。**注意本文若干结论已被推翻**（"稳定 freeze 路线"、"下一步 weight 0.1→0.2"），权威结论见 `experiment_log.md` 2026-06-30 条目与下面的 ⚠️ 纠正横幅。
+
 更新时间：2026-06-29
 
-本文件是 `docs/hand_tipw_wa2d_handoff.md` 与
+本文件是 `docs/archive/hand_tipw_wa2d_handoff.md` 与
 `docs/wa2d_group_attribution.md` 之后的补充小结，单独记录最近一轮实验、
 代码改动、结果判断和下一步建议。
+
+## ⚠️ 2026-06-30 重要纠正（以下若干小节已被推翻，先看这里 + `experiment_log.md` 2026-06-30）
+
+- **"新增稳定路线：冻结 hand_position_net" 不成立**：freeze 没修 NaN，只把崩溃从 `hand_position_net.dcnv4`（guarded **itr820**）挪到 `hand_decoder`（freeze **itr1295**）。itr500/itr1000 是崩溃前快照，可评测但配方不可复现、不稳定。
+- **Bootstrap 已补**（本文档"推荐下一步#2"要求的）：frz500 vs tipw3000 `[wa]` −0.0018(SIG)、tip −0.0042(SIG)，真但极小；frz500 vs OSX `[wa]` **+0.0068(SIG)**、tip +0.0174，仍显著输，gap **88% 在 tip+j3** → 命中天花板支。
+- **"下一步 #4：weight 0.1→0.2" 作废**：按原写法（无梯度守卫）会比 itr1295 更早 NaN。
+- **NaN 高置信根因 + 补丁**：`err=dist/diag`、diag 无梯度 → 反向幅度随 1/diag 放大，旧 floor 1e-4 让小手推到 1e4 量级并可能饱和可变形反向。2026-06-30 补丁加 `hand_wa_2d_min_diag=1.0`+`hand_wa_2d_err_clip=5.0`（config/model_core/train），下一个 WA2D run 应带此补丁、从固定 warm-start 重跑。
 
 ## 当前问题
 

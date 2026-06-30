@@ -251,6 +251,11 @@ def parse_args():
                         help='direct wrist-aligned hand 2D loss 中每根手指 j3 的权重；默认 1.0')
     parser.add_argument('--hand_wa_2d_tip_weight', type=float, default=1.0,
                         help='direct wrist-aligned hand 2D loss 中每根手指 tip 的权重；默认 1.0')
+    parser.add_argument('--hand_wa_2d_min_diag', type=float, default=1.0,
+                        help='WA2D backward NaN 守卫：GT 手 bbox 对角线(output_hm_shape 单位)的下限，'
+                             '每关节梯度=1/diag，太小会爆 NaN；默认 1.0(每指梯度<=1)，1e-4=旧危险行为')
+    parser.add_argument('--hand_wa_2d_err_clip', type=float, default=5.0,
+                        help='WA2D 每关节归一化误差上限(hard clamp)，防单个坏关节主导反向；默认 5.0，0=关闭')
     parser.add_argument('--train_face_modules', action='store_true',
                         help='默认冻结 face 分支；需要 UBody face/expression 微调时显式开启')
     parser.add_argument('--no_train_hand_modules', action='store_true',
@@ -529,6 +534,8 @@ def main():
     cfg.hand_wa_2d_loss_weight = args.hand_wa_2d_loss_weight
     cfg.hand_wa_2d_loss_sources = _normalize_hand_wa_2d_sources(args.hand_wa_2d_loss_sources)
     cfg.hand_wa_2d_loss_min_joints = args.hand_wa_2d_loss_min_joints
+    cfg.hand_wa_2d_min_diag = args.hand_wa_2d_min_diag
+    cfg.hand_wa_2d_err_clip = args.hand_wa_2d_err_clip
     wa_level_weights = {
         'hand_wa_2d_j1_weight': args.hand_wa_2d_j1_weight,
         'hand_wa_2d_j2_weight': args.hand_wa_2d_j2_weight,

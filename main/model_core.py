@@ -383,6 +383,14 @@ class Model(nn.Module):
         batch_size = joint_proj.shape[0]
         source_mask = self._hand_wa_2d_source_mask(meta_info, device, batch_size)
         min_joints = max(int(getattr(cfg, 'hand_wa_2d_loss_min_joints', 4)), 2)
+        # Backward NaN guard: err = dist / diag has per-joint grad magnitude 1/diag
+        # (diag is GT-only, no grad), so floor diag to keep the WA2D gradient O(1)
+        # and stop it saturating the deformable-attention backward. err_clip then
+        # hard-caps the per-joint normalized error against single blown-up joints.
+        min_diag = float(getattr(cfg, 'hand_wa_2d_min_diag', 1.0))
+        if not min_diag > 0:
+            min_diag = 1e-4
+        err_clip = float(getattr(cfg, 'hand_wa_2d_err_clip', 0.0))
 
         per_sample_sum = joint_proj.new_zeros((batch_size,))
         per_sample_weighted_sum = joint_proj.new_zeros((batch_size,))
@@ -443,7 +451,9 @@ class Model(nn.Module):
             pred_wa = pred + (gt_wrist - pred_wrist)[:, None, :]
             diff = pred_wa - gt
             diff = torch.where(finger_valid[:, :, None], diff, diff.new_zeros(diff.shape))
-            err = torch.sqrt((diff * diff).sum(dim=2) + 1e-8) / diag.clamp(min=1e-4)[:, None]
+            err = torch.sqrt((diff * diff).sum(dim=2) + 1e-8) / diag.clamp(min=min_diag)[:, None]
+            if err_clip > 0:
+                err = err.clamp(max=err_clip)
             per_hand = (err * finger_valid.float()).sum(dim=1) / finger_valid.float().sum(dim=1).clamp(min=1.0)
             valid_weight = finger_valid.float() * level_weight
             per_hand_weighted = (err * valid_weight).sum(dim=1) / valid_weight.sum(dim=1).clamp(min=1.0)

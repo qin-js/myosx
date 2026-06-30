@@ -135,11 +135,11 @@ class Config:
     # the (warm) hand weights — letting a later joint stage warm-start from it.
     # Used by the face-only stage: load _c's hands, freeze them, train only face.
     train_hand_modules = True
-    # WA2D polish stabilization: keep the warm-started hand_position_net fixed
-    # while updating hand_decoder/hand_regressor. This prevents DCNv4 soft-argmax
-    # backward from producing non-finite gradients on rare natural-hand batches.
-    # The module name stays in trainable_module_names so lightweight snapshots
-    # still carry its warm weights.
+    # WA2D diagnostic/stabilization attempt: keep the warm-started hand_position_net
+    # fixed while updating hand_decoder/hand_regressor. This isolates position-head
+    # DCNv4 backward, but freeze runs can still hit non-finite gradients in the
+    # decoder; it is not a stable recipe. The module name stays in
+    # trainable_module_names so lightweight snapshots still carry its warm weights.
     freeze_hand_position_net = False
     # Body-shape T1 micro-experiment gate (default OFF). When True, the two
     # decoupled linear heads body_regressor.shape_out + cam_out are unfrozen
@@ -176,6 +176,18 @@ class Config:
     hand_wa_2d_j2_weight = 1.0
     hand_wa_2d_j3_weight = 1.0
     hand_wa_2d_tip_weight = 1.0
+    # WA2D backward NaN guard (2026-06-30). err = dist / diag and diag is GT-only
+    # (no grad), so the per-joint backward magnitude scales as 1/diag; the old
+    # diag floor of 1e-4 let a tiny GT hand bbox push it to 1e4 (wrist 20x more),
+    # which is finite but saturates the DCNv4 / hand_decoder deformable backward to
+    # NaN (hand_tipw without this loss never NaN'd). diag is in output_hm_shape
+    # units (full heatmap diagonal ~20); min_diag=1.0 bounds the per-finger grad at
+    # <=1.0, comparable to the other 2D losses. err_clip hard-clamps the per-joint
+    # normalized error so a single blown-up joint can't dominate (normal hands sit
+    # at ~0.1-0.5, so 5.0 only touches garbage). Set min_diag=1e-4 + err_clip=0 to
+    # reproduce the old NaN-prone behavior for ablation.
+    hand_wa_2d_min_diag = 1.0
+    hand_wa_2d_err_clip = 5.0
     # Optional warm-start (only consulted when continue_train is False): load the
     # trained hand/face tensors from a lightweight snapshot WITHOUT resuming the
     # epoch counter or optimizer state. Used to chain training stages

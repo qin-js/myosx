@@ -2,6 +2,77 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-06-30
+
+### WA2D 触顶 + NaN 高置信根因定位 + 梯度稳定补丁
+
+**Bootstrap（配对，1万次重采样，逐手对齐 n=3432；6-29 文档要求但当时未做的那个）**：
+
+| 对比 | `[wa]` | tip | 备注 |
+|---|---|---|---|
+| frz500 vs tipw3000 | −0.0018 CI[−0.0019,−0.0017] SIG | −0.0042 SIG | freeze 真比 tipw 好，但极小 |
+| frz500 vs snap2 | −0.0031 SIG | — | 整条 WA2D 线净收益 |
+| frz500 vs frz1000 | −0.0001 | — | 平台坐实 |
+| frz500 vs OSX | **+0.0068** CI[+0.0060,+0.0076] SIG | +0.0174 CI[+0.0156,+0.0191] SIG | 仍显著输；gap **88% 在 tip+j3** |
+| frz500 vs tipw3000（3D PA手）| +0.087mm SIG | — | WA2D 拿一丝 3D 换 2D（仍 ~OSX 水平）|
+
+判读：配对 CI 窄到 0.0001 也判"显著"（见 frz500 vs frz1000），说明**统计显著不是该看的标尺**；WA2D 把 gap 均匀压低约 30% 但 distal 形状不变（仍 88% tip+j3）→ 命中 `wa2d_group_attribution.md` 预注册的**天花板支**。frz500 是当前最好的评测产物，但收益微小且已渐近。
+
+**frz500 guardrail（2026-06-30 补测，`output/hand_wa2d_distal_guard_freeze_hand_position_net/result/snapshot_0_itr500/`）**：
+
+| 指标 | snap2 | tipw3000 | frz500 | 判定 |
+|---|---:|---:|---:|---|
+| InterHand PA | 16.78 | 16.95 | **17.00** | 正好踩 17.0 kill 线，lineage 最差 |
+| InterHand wrist-rel | 84.13 | — | **83.89** | 微好 |
+| HInt `[all wa]` | 0.480 | 0.480 | **0.480** | 守住 |
+| HInt `[all abs]` | 0.445 | — | **0.445** | 守住 |
+| EHF Face PA-MPVPE | 6.15 | 6.15 | **6.15** | 守住 |
+| EHF Hands PA-MPVPE | 15.67 | 15.62 | **15.72** | 轻微回退但可接受 |
+| UBody `[wa]` | 0.229 | 0.227 | **0.226** | 仍输 OSX 0.0068 |
+| UBody tip | 0.288 | 0.284 | **0.280** | 仍输 OSX |
+
+判读：**严格说 guardrail 基本过，但 frz500 没有报告余量**。InterHand PA=17.00 刚好压线，且从 snap2→tipw→frz500 单调变差；HInt/EHF 守住，UBody `[wa]` 小幅最好，但仍显著输 OSX。结合 bootstrap 和 NaN 根因，frz500 应定位为"WA2D 触顶诊断/崩溃前快照"，不宜作为主报告点，也不该把 freeze 当稳定 recipe 推进。
+
+**NaN 高置信根因（关键，推翻 6-29 "稳定 freeze 路线"）**：freeze 没修 NaN，只把崩溃从 `module.hand_position_net.dcnv4_blocks.0`（guarded run，itr **820**，lr=1e-7，offset_mask 部分坏 55296/57344）挪到 `module.hand_decoder`（freeze run，itr **1295**，level_embed/input_proj 全坏）。两处都是可变形注意力反向。机制解释：`err = sqrt(Σdiff²+eps) / diag`，`diag` 由 GT 算、**无梯度** → 反向幅度随 `1/diag` 放大；旧 `diag.clamp(min=1e-4)` 让极小 GT 手把它推到 **1e4** 量级，wrist 对多指误差还会累积，有限但可能饱和 DCNv4/decoder 反向成 NaN。`hand_tipw`（无此 loss、梯度 O(1)）从不炸，是反证。待 6-30 补丁在同配置下跑过 itr1295 后闭环。**freeze itr500/itr1000 是崩溃前快照，可评测但配方不可复现、不稳定。**
+
+**补丁（2026-06-30，3 文件 `config.py`/`model_core.py`/`train.py`）**：新增 `hand_wa_2d_min_diag=1.0`（每指梯度 ≤1，与其它 2D loss 同量级）+ `hand_wa_2d_err_clip=5.0`（hard clamp 单关节归一化误差）。WA2D 为 opt-in，`weight=0` 时字节不变；旧 NaN 行为可复现 `--hand_wa_2d_min_diag 1e-4 --hand_wa_2d_err_clip 0`。`py_compile` + `git diff --check` 通过；未跑 smoke（交互环境 DCNv4 CUDA 枚举失败）。
+
+**下一步**：① 验证 6-30 补丁能跑过 itr1295 不炸（固定 warm-start `hand_tipw itr3000`、posnet 不冻、weight 0.1、安全默认）；② 做干净 MSCOCO source ablation（`sources=ubody` vs `ubody,mscoco`，除 source 外同配置、同 warm-start）——`hand_wa2d_distal` 的 ubody-only run 不算，因为它是 weight=1.0 激进+无守卫的崩溃 run；③ 不再把 frz500/freeze 当主线，若写入论文只能作为 WA2D 缩小 gap 但触顶的负结果/诊断；④ 回到 InterHand 公平基线 + UBody 诚实定位（teacher distillation 只能追平 OSX、不可能超过 teacher）。
+
+## 2026-06-29
+
+### Group attribution + direct WA2D loss 实验（注：bootstrap/NaN 已于 2026-06-30 补测并部分推翻本条，见上）
+
+**逐关节 group attribution（per-hand dump，按 `wa2d_group_attribution.md` 方案）**：snap2 vs OSX 整体 `[wa]` delta +0.0099，按 level：j1 +0.0009 / j2 +0.0040 / j3 +0.0117 / tip +0.0252 → gap **集中在 distal（tip+j3 占 ~88%）**，不是小手/遮挡/左右手某一类。`hand_tipw itr3000` vs OSX 整体 +0.0086、tip +0.0216（tipw 缩小了一点 tip gap）。
+
+**WA2D 实验三组**：
+
+- **Aggressive**（`output/hand_wa2d_distal`，weight 1.0、level j1=.25/j2=.5/j3=1.5/tip=3.0、sources **ubody**）：itr500 崩，`[wa]` 0.260 / tip 0.364 / PA手 10.93。权重过强 + 当时无 non-finite guard，弃。
+- **`hand_wa2d_distal_2`**：source 传中文逗号 `ubody，mscoco`，修复前导致 WA2D inactive，结果无效，弃。
+- **Guarded**（`output/hand_wa2d_distal_guard`，warm-start `hand_tipw itr3000`、weight 0.1、sources ubody,mscoco、level j1=0/j2=0/j3=1/tip=1、tip_w 2.0/j3_w 1.5、posnet_lr_mult 0.25）：itr820 backward 出 non-finite（`hand_position_net.dcnv4_blocks.0`）。itr500 评测 `[wa]` 0.226 / tip 0.281；vs OSX 整体 +0.0075 / tip +0.0188。3D 手不坏、略好。
+
+**新增 `--freeze_hand_position_net`**（默认关闭）：冻 `hand_position_net`（不进优化器、仍存进 snapshot），只训 decoder/regressor，意在绕开 DCNv4 NaN。Freeze run（warm-start guarded itr500）：itr500 vs OSX 整体 **+0.0068** / tip +0.0174；itr1000 平台（+0.0069）。**当时判为当前最佳候选**——此结论于 2026-06-30 被推翻（freeze 只把 NaN 挪到 decoder itr1295，且收益经 bootstrap 确认极小、仍显著输 OSX）。
+
+## 2026-06-28
+
+### Route C 收口 + hand_tipw + 新增 direct WA2D loss 代码
+
+**Route C（`--train_hand_roi`，解冻 `hand_roi_net`）**：Clean C（IH/UBody only、`hand_roi_lr=1e-6`）UBody 无改善，`[wa]` 仍 ~0.229；C+tipw+MSCOCO（`hand_roi_lr=3e-6`）约 itr700 后失稳，itr1000 `[wa]` ~0.260 / tip ~0.364。判定：收益/风险比差，非优先路线。
+
+**hand_tipw**（`output/hand_tipw`，warm-start snap2、mix IH 0.35/UBody 0.25/MSCOCO 0.40、frozen ROI、`--hand_tip_loss_weight 2.0 --hand_j3_loss_weight 1.5`）：
+
+| ckpt | UBody `[wa]` | tip | `[abs]` | PA手 |
+|---|---:|---:|---:|---:|
+| snap2 | 0.229 | 0.288 | 0.324 | 10.15 |
+| tipw itr3000 | 0.227 | 0.284 | 0.315 | 10.08 |
+| tipw itr4000 | 0.227 | 0.284 | 0.315 | 10.10 |
+
+选 **itr3000**（与 itr4000 的 UBody 持平，但 InterHand/EHF/PA 略好）。guardrail itr3000：InterHand PA 16.95 / HInt `[wa]` 0.480 / EHF Hands 15.62 / Face 6.15。
+
+**Bootstrap（配对）**：snap2 vs tipw3000 `[wa]` delta +0.0016 CI[+0.0003,+0.0029] P=0.993（tipw 显著好但微小）、tip +0.0039、abs +0.0082；OSX vs tipw3000 `[wa]` delta −0.0086 CI[−0.0094,−0.0078]（仍显著输 OSX）。tipw 只补回原 gap 的 ~16%。
+
+**新增 direct wrist-aligned 2D hand loss（默认关闭）**：full-body heatmap 坐标、wrist translation 对齐、GT 手 bbox 对角线归一化，对齐 UBody `[wa]` 指标；sources 默认 ubody,mscoco，支持 j1/j2/j3/tip level 权重。改 6 文件（`config.py`/`train.py`/`model_core.py`/`UBody.py`/`MSCOCO.py`/`dataset.py`），`py_compile` 通过，当时未跑训练。详细 handoff 见 `docs/archive/hand_tipw_wa2d_handoff.md`、`docs/archive/recent_experiment_summary_2026-06-29.md`；方法设计见 `docs/wa2d_group_attribution.md`。
+
 ## 2026-06-27
 
 ### 【重大】编码器移植 bug 发现并修复：StandardViT 与 OSX MMCV ViT 现逐比特一致

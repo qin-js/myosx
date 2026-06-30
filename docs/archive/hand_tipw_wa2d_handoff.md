@@ -1,5 +1,7 @@
 # Hand TipW / WA2D Handoff
 
+> **已归档 2026-06-30**：本文的实验结果已并入 `docs/experiment_log.md`（2026-06-28 条目）。本文留作当时的详细 handoff（完整命令/配置）。权威时间线以 `experiment_log.md` 为准；WA2D 触顶与 NaN 根因的最新结论见该 log 的 2026-06-30 条目。
+
 更新时间：2026-06-28
 
 本文件整理当前会话中的实验结果、判断和下一步建议，供转交他人讨论。项目背景：OSX 研究分支 `myosx`，当前分支 `dev`；目标是在冻结 OSX backbone 的 PyTorch decoder 路径上微调手/脸头，争取手部姿态超过原始 OSX。
