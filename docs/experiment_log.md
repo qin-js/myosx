@@ -62,6 +62,39 @@
 
 **转论文（替代上面的"下一步"①②）**：① **InterHand 公平基线**（同数据微调一个 OSX-normal 当对照）——最高性价比，守住 −14% 头条；② **rotmat pose loss**（`use_hand_rotmat_pose_loss`，已实现未试）——便宜低风险的 **InterHand 侧** polish（仅在 InterHand/BEDLAM 有可靠 hand pose GT 处 fire，UBody 伪 GT 吃不到），当 ablation；③ **OSX teacher distillation**——把 UBody 锁到 parity（追平、超不过 teacher）；④ **诚实定位**：held-out 泛化赢（InterHand/HInt）+ in-domain 追平（UBody/EHF），不在 OSX 训练域内硬刚。
 
+### body-shape T1 启动配方（2026-06-25 立项的可执行版；代码已验证完好）
+
+T1 = 解冻 `body_regressor.shape_out`(10) + `cam_out`(3)，BEDLAM-only 监督、极小 LR，针对诊断出的 betas mean-reversion（身体偏软/厚、抓不住精瘦体格）。**定位：配图级附带线，非主贡献。** 预期诚实：13 参数 + 冻结特征 + 全合成 betas 监督 → **大概率动合成口径 shape，真实图轮廓改善不确定、可能有限**；务必挂量化兜底，别靠肉眼自我感动。
+
+**代码状态（2026-06-30 复核）**：T1 实现（config/model_core/base/train 四处，详见 2026-06-25 条目）经 WA2D/track-B 改动后**仍完好**，flag/prefixes/optimizer group/verify 白名单均在，launch-ready。
+
+**前置 config.py 改动**（全局，跑完务必改回）：`trainset_3d=['BEDLAM']`、`trainset_2d=[]`（BEDLAM-only，屏蔽 UBody 伪 GT betas 污染）。
+
+**启动命令**（pytorch 路径，冻手只训 shape/cam；`--phase1_epochs`=end_epoch 保证满 LR，避免 phase2 ×0.1 坑）：
+
+```bash
+cd /workspace/myosx/main
+python train.py --gpu_ids 0 --lr 1e-5 --train_batch_size 64 --num_thread 8 \
+  --end_epoch 2 --phase1_epochs 2 \
+  --exp_name output/body_shape_t1 --decoder_setting pytorch --encoder_setting osx_l \
+  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+  --init_trained_path ../output/joint_polish_f/model_dump/snapshot_2.pth.tar \
+  --no_train_hand_modules --train_body_shape --body_shape_lr 1e-5
+```
+
+启动应见 `🔧 body-shape T1: 解冻 ~13k 参数` + verify/grad-flow 通过（仅 shape_out/cam_out 有梯度，手全冻）。
+
+**验证（三条全做，不能只看 demo）**：
+
+| 口径 | 看什么 | 作用 |
+|---|---|---|
+| 量化锚（必须）| AGORA/BEDLAM shape PA-MPVPE / betas 误差 | 合成口径 shape 动没动、变好变坏——客观真相 |
+| 定性 | 重渲染 `demo/output_face_ubody_e/compare/{24,39,69,92}` 精瘦男多姿态 vs OSX | 真实图轮廓有无肉眼改善 |
+| 手 guardrail | InterHand PA / UBody `[wa]` | 手冻结→**必须纹丝不动**；动了=漏进手路径，bug，停 |
+| cam_out 副作用 | UBody `[abs]` / wrist-rel | cam_out 改投影→可能白捡 `[abs]` 改善或退化，盯一下 |
+
+**停止/判定**：2 epoch 足够（13 参数极快）；BEDLAM body type 单一，AGORA 量化开始退=过拟，停。AGORA 改善+demo 肉眼变好+手不动→留作配图；AGORA 动但 demo 无肉眼变化→诚实记"合成口径动、真实定性有限"，别 oversell。
+
 ## 2026-06-29
 
 ### Group attribution + direct WA2D loss 实验（注：bootstrap/NaN 已于 2026-06-30 补测并部分推翻本条，见上）
