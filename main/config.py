@@ -188,6 +188,16 @@ class Config:
     # reproduce the old NaN-prone behavior for ablation.
     hand_wa_2d_min_diag = 1.0
     hand_wa_2d_err_clip = 5.0
+    # Skip-bad-batch guard (2026-06-30). The diag floor + err_clip above cut the
+    # WA2D NaN blast radius ~20x but cannot fully prevent it: on a few natural-hand
+    # batches the DCNv4 deformable-sampling BACKWARD kernel itself overflows (NaN is
+    # born inside the sampling op — offset_mask/value_proj partial-NaN while
+    # output_proj/norm2 stay finite), and WA2D only supplies the upstream gradient
+    # magnitude. False (default) = strict: a non-finite grad aborts the run (old
+    # behavior, byte-identical). True = detect non-finite grads after backward,
+    # zero them, skip the optimizer step for that iter, and continue — one bad batch
+    # in ~800 shouldn't kill a 4733-iter run. Skips are logged + counted.
+    skip_nonfinite_grad = False
     # Optional warm-start (only consulted when continue_train is False): load the
     # trained hand/face tensors from a lightweight snapshot WITHOUT resuming the
     # epoch counter or optimizer state. Used to chain training stages

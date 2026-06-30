@@ -1,6 +1,6 @@
 # 项目总览
 
-更新时间：2026-06-27
+更新时间：2026-06-30
 
 ## 项目目标
 
@@ -12,6 +12,17 @@
 - HInt：提供 held-out hand-interaction 2D 手关键点评测；当前 loader 是 hand-crop/local-hand 口径。
 
 当前战略（2026-06-27 修订）：**脸不是贡献点；编码器移植 bug 已修复（pytorch 路径现与 OSX 逐比特一致）；手头对修复鲁棒、无需重训。修复后 UBody `[abs]` 与 EHF Face 免费追平 OSX，InterHand/HInt 仍赢；唯一干净未过的是 UBody natural-hand `[wa]` 落后 OSX 0.010（已隔离为纯手头自然图手指 articulation）。**
+
+## 2026-06-30 更新：UBody `[wa]` polish 线触顶，重心转回论文
+
+6-28～30 围绕 UBody `[wa]` 那 0.010 做了 tipw + direct WA2D loss 一整轮，结论是**触顶**（完整记录见 `experiment_log.md` 2026-06-28/29/30，方法设计见 `docs/wa2d_group_attribution.md`）：
+
+- **配对 bootstrap**：最好的 WA2D checkpoint `frz500` 显著优于 tipw（`[wa]` −0.0018）但**仍显著输 OSX +0.0068**，gap **88% 在 tip+j3**（distal）——命中预注册天花板支。`itr500≈itr1000` 平台。
+- **三重触顶**：①指标渐近；②InterHand 头条被侵蚀，`frz500` PA=**17.00** 正好踩 kill 线（snap2 16.78→tipw 16.95→frz500 17.00 单调变差）；③数值上 WA2D 触发 DCNv4 可变形采样**反向 kernel** 偶发 NaN，loss 端补丁（`min_diag`/`err_clip`）只缩小 20× 未根治，需 `--skip_nonfinite_grad` 跳坏 batch 才能跑完整 epoch。
+- **frz500/freeze 不作主报告点**：guardrail 基本过但无余量；要报告平衡点用 `snap2`（最强 InterHand）或 `tipw3000`。freeze 的"稳定路线"是误判（只把 NaN 从 posnet itr820 挪到 decoder itr1295）。
+- **下一步重心**：①**InterHand 公平基线**（同数据微调 OSX）或 headline 让位 held-out HInt；②**UBody 诚实定位**（`[abs]` 已平价、`[wa]` 差 ~0.007，配 InterHand/HInt held-out 赢）；teacher distillation 只能追平 OSX、不能超。WA2D 仅作"缩小 gap 但触顶"的诊断/负结果。
+
+> 下面 §当前模型阶段起为 6-27 历史快照（仍有效，作诊断参照）；WA2D 这一周的结论与"推荐下一步"以本节 + `experiment_log.md` 6-28/29/30 为准。
 
 ## 当前模型阶段
 

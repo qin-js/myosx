@@ -37,7 +37,11 @@
 
 **补丁（2026-06-30，3 文件 `config.py`/`model_core.py`/`train.py`）**：新增 `hand_wa_2d_min_diag=1.0`（每指梯度 ≤1，与其它 2D loss 同量级）+ `hand_wa_2d_err_clip=5.0`（hard clamp 单关节归一化误差）。WA2D 为 opt-in，`weight=0` 时字节不变；旧 NaN 行为可复现 `--hand_wa_2d_min_diag 1e-4 --hand_wa_2d_err_clip 0`。`py_compile` + `git diff --check` 通过；未跑 smoke（交互环境 DCNv4 CUDA 枚举失败）。
 
-**下一步**：① 验证 6-30 补丁能跑过 itr1295 不炸（固定 warm-start `hand_tipw itr3000`、posnet 不冻、weight 0.1、安全默认）；② 做干净 MSCOCO source ablation（`sources=ubody` vs `ubody,mscoco`，除 source 外同配置、同 warm-start）——`hand_wa2d_distal` 的 ubody-only run 不算，因为它是 weight=1.0 激进+无守卫的崩溃 run；③ 不再把 frz500/freeze 当主线，若写入论文只能作为 WA2D 缩小 gap 但触顶的负结果/诊断；④ 回到 InterHand 公平基线 + UBody 诚实定位（teacher distillation 只能追平 OSX、不可能超过 teacher）。
+**补丁实测（`output/hand_wa2d_stable`，weight 0.1、posnet 不冻、安全默认）——只缩小未根治**：补丁确实生效（code 快照含 min_diag/err_clip，日志确认设上），但仍在 `hand_position_net.dcnv4_blocks.0` 于 itr **814**（前 820，几乎同批数据）炸，只是**爆炸半径缩约 20×**：offset_mask 坏元素 55296→**3072**、value_proj 满坏→**98304/262144**，且 **output_proj/norm2 这次干净**。崩前 `loss_hand_wa_2d_raw=0.088` 正常。坏元素位置（output_proj/norm2 干净、value_proj/offset_mask 部分坏、norm1 全坏）说明 **NaN 生于 DCNv4 可变形采样的反向 kernel 内部**；loss 端只能压上游梯度量级（已压 20×）、压不掉 kernel 内溢出。`hand_tipw`（无 WA2D）从不炸是反证。**根因层级从 loss 上移到 DCNv4 kernel。**
+
+**新增 `--skip_nonfinite_grad`（train.py，默认关闭=旧严格 abort）**：backward 后检测到非有限梯度则 `zero_grad`+跳过该 iter（不 step）、记日志计数 `skipped=N`，而非中止整个 run；scheduler/timer 照走。用于绕过 ~1/800 病态 batch 拿完整 epoch 测量。看 `skipped=N`：个位数=可用；几十+=大比例手 batch 病态、结果有偏、应收掉 WA2D 线。实现把 `_raise_nonfinite_trainable_grads` 拆出非抛异常的 `_collect_nonfinite_trainable_grads`，clip/step 包进 `if not skip_iter:`。`py_compile` 过，flag 关时字节不变。
+
+**下一步**：① WA2D loss 补丁只缩小未根治 → 用 `--skip_nonfinite_grad`（或更低 weight 0.05，user 正测）拿一个完整 epoch 的干净测量，与 frz500/tipw 做 bootstrap——这是 WA2D 线最终 go/no-go，不是要救成主线；② 做干净 MSCOCO source ablation（`sources=ubody` vs `ubody,mscoco`，除 source 外同配置、同 warm-start）——`hand_wa2d_distal` 的 ubody-only run 不算，因为它是 weight=1.0 激进+无守卫的崩溃 run；③ 不再把 frz500/freeze 当主线，若写入论文只能作为 WA2D 缩小 gap 但触顶的负结果/诊断；④ 回到 InterHand 公平基线 + UBody 诚实定位（teacher distillation 只能追平 OSX、不可能超过 teacher）。
 
 ## 2026-06-29
 

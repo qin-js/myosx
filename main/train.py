@@ -132,7 +132,10 @@ def _raise_nonfinite_trainable_params(model, logger, epoch, itr):
     raise RuntimeError(msg)
 
 
-def _raise_nonfinite_trainable_grads(model, logger, epoch, itr, stage):
+def _collect_nonfinite_trainable_grads(model, limit=10):
+    """Return [(name, n_bad, numel), ...] for trainable params with non-finite
+    grads (capped at `limit`); empty list = all finite. Non-raising, so callers
+    can either abort (strict) or skip the batch."""
     bad = []
     for name, param in model.named_parameters():
         if not param.requires_grad or param.grad is None:
@@ -142,9 +145,13 @@ def _raise_nonfinite_trainable_grads(model, logger, epoch, itr, stage):
             continue
         n_bad = (~torch.isfinite(grad)).sum().item()
         bad.append((name, n_bad, grad.numel()))
-        if len(bad) >= 10:
+        if len(bad) >= limit:
             break
+    return bad
 
+
+def _raise_nonfinite_trainable_grads(model, logger, epoch, itr, stage):
+    bad = _collect_nonfinite_trainable_grads(model)
     if not bad:
         return
 
@@ -213,6 +220,9 @@ def parse_args():
                              '稳定 soft-argmax 深度分支防止中途发散')
     parser.add_argument('--posnet_grad_clip', type=float, default=0.5,
                         help='hand_position_net 单独梯度裁剪范数 (<=0 关闭)')
+    parser.add_argument('--skip_nonfinite_grad', action='store_true',
+                        help='backward 后若出现非有限梯度，跳过该 iter（zero_grad、不 step）而非中止训练；'
+                             '默认关闭=旧的严格 abort。用于绕过 DCNv4 采样反向偶发 NaN 的坏 batch')
     parser.add_argument('--phase1_epochs', type=int, default=DEFAULT_PHASE1_EPOCHS,
                         help='手部微调 Phase 1 的 epoch 数；默认覆盖 10 epoch 短程混训')
     parser.add_argument('--save_iters', type=int, default=0,
@@ -536,6 +546,7 @@ def main():
     cfg.hand_wa_2d_loss_min_joints = args.hand_wa_2d_loss_min_joints
     cfg.hand_wa_2d_min_diag = args.hand_wa_2d_min_diag
     cfg.hand_wa_2d_err_clip = args.hand_wa_2d_err_clip
+    cfg.skip_nonfinite_grad = args.skip_nonfinite_grad
     wa_level_weights = {
         'hand_wa_2d_j1_weight': args.hand_wa_2d_j1_weight,
         'hand_wa_2d_j2_weight': args.hand_wa_2d_j2_weight,
@@ -619,39 +630,57 @@ def main():
             total_loss = sum(loss[k] for k in loss if not k.startswith('_'))
             _raise_nonfinite_loss(loss, total_loss, meta_info, trainer.logger, epoch, itr)
             total_loss.backward()
-            _raise_nonfinite_trainable_grads(trainer.model, trainer.logger, epoch, itr, 'after backward')
 
-            # ---- 梯度裁剪（防止新模块初期梯度爆炸）----
-            # position_nets (soft-argmax, diverges mid-epoch) get a separate,
-            # tighter clip; everything else uses the global grad_clip. Clipping
-            # the two disjoint sets independently avoids double-clipping posnet.
-            if cfg.posnet_grad_clip > 0:
-                posnet_params = _grad_params_for_groups(trainer.optimizer, {'position_nets'})
-                if posnet_params:
-                    _clip_grad_norm_checked(
-                        posnet_params,
-                        cfg.posnet_grad_clip,
-                        'position_nets',
-                        trainer.logger,
-                        epoch,
-                        itr,
-                    )
-            if args.grad_clip > 0:
-                other_params = _grad_params_for_groups(
-                    trainer.optimizer, {'hand_face_new_modules', 'regressors', 'body_shape', 'hand_roi'})
-                if other_params:
-                    _clip_grad_norm_checked(
-                        other_params,
-                        args.grad_clip,
-                        'non_position_groups',
-                        trainer.logger,
-                        epoch,
-                        itr,
-                    )
-            _raise_nonfinite_trainable_grads(trainer.model, trainer.logger, epoch, itr, 'after clipping')
+            # Non-finite grads after backward: abort (strict, default) or skip the
+            # iter (--skip_nonfinite_grad) to survive the occasional DCNv4-backward
+            # NaN batch without killing the whole run.
+            skip_iter = False
+            if getattr(cfg, 'skip_nonfinite_grad', False):
+                bad_grads = _collect_nonfinite_trainable_grads(trainer.model)
+                if bad_grads:
+                    skip_iter = True
+                    trainer.skip_nonfinite_count = getattr(trainer, 'skip_nonfinite_count', 0) + 1
+                    trainer.logger.warning(
+                        'Skip itr %d (epoch %d): non-finite grads after backward, '
+                        'skipped=%d so far. %s' % (
+                            itr, epoch, trainer.skip_nonfinite_count,
+                            ' '.join('%s=%d/%d' % b for b in bad_grads[:4])))
+                    trainer.optimizer.zero_grad(set_to_none=True)
+            else:
+                _raise_nonfinite_trainable_grads(trainer.model, trainer.logger, epoch, itr, 'after backward')
 
-            trainer.optimizer.step()
-            _raise_nonfinite_trainable_params(trainer.model, trainer.logger, epoch, itr)
+            if not skip_iter:
+                # ---- 梯度裁剪（防止新模块初期梯度爆炸）----
+                # position_nets (soft-argmax, diverges mid-epoch) get a separate,
+                # tighter clip; everything else uses the global grad_clip. Clipping
+                # the two disjoint sets independently avoids double-clipping posnet.
+                if cfg.posnet_grad_clip > 0:
+                    posnet_params = _grad_params_for_groups(trainer.optimizer, {'position_nets'})
+                    if posnet_params:
+                        _clip_grad_norm_checked(
+                            posnet_params,
+                            cfg.posnet_grad_clip,
+                            'position_nets',
+                            trainer.logger,
+                            epoch,
+                            itr,
+                        )
+                if args.grad_clip > 0:
+                    other_params = _grad_params_for_groups(
+                        trainer.optimizer, {'hand_face_new_modules', 'regressors', 'body_shape', 'hand_roi'})
+                    if other_params:
+                        _clip_grad_norm_checked(
+                            other_params,
+                            args.grad_clip,
+                            'non_position_groups',
+                            trainer.logger,
+                            epoch,
+                            itr,
+                        )
+                _raise_nonfinite_trainable_grads(trainer.model, trainer.logger, epoch, itr, 'after clipping')
+
+                trainer.optimizer.step()
+                _raise_nonfinite_trainable_params(trainer.model, trainer.logger, epoch, itr)
             trainer.scheduler.step()
             trainer.gpu_timer.toc()
 
