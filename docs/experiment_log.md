@@ -43,6 +43,25 @@
 
 **下一步**：① WA2D loss 补丁只缩小未根治 → 用 `--skip_nonfinite_grad`（或更低 weight 0.05，user 正测）拿一个完整 epoch 的干净测量，与 frz500/tipw 做 bootstrap——这是 WA2D 线最终 go/no-go，不是要救成主线；② 做干净 MSCOCO source ablation（`sources=ubody` vs `ubody,mscoco`，除 source 外同配置、同 warm-start）——`hand_wa2d_distal` 的 ubody-only run 不算，因为它是 weight=1.0 激进+无守卫的崩溃 run；③ 不再把 frz500/freeze 当主线，若写入论文只能作为 WA2D 缩小 gap 但触顶的负结果/诊断；④ 回到 InterHand 公平基线 + UBody 诚实定位（teacher distillation 只能追平 OSX、不可能超过 teacher）。
 
+### WA2D 线收口（weight=0.05 是封口点）
+
+**weight=0.05 实测（`output/hand_wa2d_stable_005`，posnet 不冻）——两个轴都更差且仍炸**：指标 itr500 group `[wa]`=0.2263（Δ vs OSX **+0.0081**）、tip Δ +0.0203——**比 frz500 还差**（+0.0068 / tip +0.0174），符合"weight 减半=polish 减半"。NaN 在 itr**767**（比 0.1 的 814/820 **更早**），爆炸半径与 0.1 几乎一样（offset_mask 4096/57344、value_proj 131072/262144）。→ **在 0.05–0.1 区间 NaN 基本与 weight 无关**：降权既换不来更好指标、也逃不掉 DCNv4 kernel NaN。（此 run 未带 `--skip_nonfinite_grad`，走旧严格 abort。）
+
+**完整 sweep（group attribution 口径）**：
+
+| weight / 变体 | UBody `[wa]` | Δ vs OSX | tip Δ | NaN |
+|---|---:|---:|---:|---|
+| snap2（基线）| 0.2281 | +0.0099 | +0.0252 | — |
+| 0.05 itr500 | 0.2263 | +0.0081 | +0.0203 | @767 |
+| 0.1 guarded itr500 | 0.2256 | +0.0075 | +0.0188 | @820 |
+| 0.1 freeze itr500 | 0.2250 | +0.0068 | +0.0174 | @1295(decoder) |
+| 1.0 aggressive | 0.260 | 崩 | — | — |
+| OSX | 0.2182 | 0 | 0 | — |
+
+**三堵墙全部用数据封死**：① 指标天花板（最优 frz500 仍 +0.0068、88% distal，单调但够不到 0）；② 数值（NaN 与 weight 无关、根在 DCNv4 反向 kernel，只能 skip 不能调）；③ InterHand 侵蚀（frz500 PA=17.00 踩 kill 线）。**WA2D 权重 sweep 已无信息增量 → 线收口。** `frz500≈frz1000` 已是收敛证据，不必再补 0.1+skip 长跑；frz500 仅作 ablation 负结果（"direct 2D 监督收 ~30% gap 后平台"）。
+
+**转论文（替代上面的"下一步"①②）**：① **InterHand 公平基线**（同数据微调一个 OSX-normal 当对照）——最高性价比，守住 −14% 头条；② **rotmat pose loss**（`use_hand_rotmat_pose_loss`，已实现未试）——便宜低风险的 **InterHand 侧** polish（仅在 InterHand/BEDLAM 有可靠 hand pose GT 处 fire，UBody 伪 GT 吃不到），当 ablation；③ **OSX teacher distillation**——把 UBody 锁到 parity（追平、超不过 teacher）；④ **诚实定位**：held-out 泛化赢（InterHand/HInt）+ in-domain 追平（UBody/EHF），不在 OSX 训练域内硬刚。
+
 ## 2026-06-29
 
 ### Group attribution + direct WA2D loss 实验（注：bootstrap/NaN 已于 2026-06-30 补测并部分推翻本条，见上）

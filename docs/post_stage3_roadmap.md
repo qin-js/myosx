@@ -1,10 +1,62 @@
 # Stage 3 之后的路线与决策（in-the-wild hand 主线）
 
-更新时间：2026-06-27
+更新时间：2026-06-30
 
 本文件是**前瞻性路线/决策文档**，承接 Stage 3 收口之后的方向选择。
 - 按时间的结果记录见 `docs/experiment_log.md`；当前状态快照见 `docs/project_overview.md`。
 - 本文件回答的是：**手部微调收口后，往哪走、为什么、风险多大、怎么判定生死。**
+
+---
+
+## 0″. 2026-06-30 更新：WA2D 收口 → 主线转 InterHand 公平基线
+
+**UBody `[wa]` 那 0.010 的 direct-loss 攻坚（tipw + WA2D，6-28~30）已收口为负结果**（完整记录见 `experiment_log.md` 2026-06-30）：三堵墙——指标天花板（最优 frz500 仍 +0.0068、88% distal）、数值 NaN（根在 DCNv4 反向 kernel、与 weight 无关）、InterHand 侵蚀（frz500 PA=17.00 踩 kill 线）。**§3-§4 的"路线 C / direct 2D 监督"主线到此为止；下面 §1-§7 作历史保留。** 新主线 = **把 InterHand −14% 从"不公平"变"公平/诚实"**，这是论文真正的成败点。
+
+### 背景：为什么 −14% 现在站不住
+
+OSX 训练集（MSCOCO/H36M/MPII/UBody/AGORA）**不含 InterHand26M**，所以我们 InterHand-test PA 16.78 vs OSX 19.58（−14%）本质是"我们微调 vs OSX 零样本"，审稿人会当 domain adaptation 打折（见 memory `interhand-not-in-osx-training`）。
+
+### 代码约束（必须先知道）
+
+`main/OSX.py`（normal 路径）**没有**冻结脚手架（`frozen_modules`/`freeze_modules()`/`trainable_module_names`），而 `common/base.py` 训练流程无条件调用 `model.module.freeze_modules()`（602）等。→ **`--decoder_setting normal` 跑训练会直接 AttributeError 崩**；normal 在本 fork 是纯 eval（19.58 基线来源）。所以"微调 OSX"不是加 flag，需要先给 OSX.py 补脚手架。
+
+### 轨 A（零训练，立刻让论文站住）—— 换 headline
+
+- **headline 让给 held-out HInt**：HInt hand-crop held-out，两个模型都没训过 → 公平对比，我们 0.487→0.480 赢。
+- **InterHand 降级为诚实 in-domain 结果**：明确标注 fine-tune-vs-zero-shot caveat，不当主卖点。
+- 成本 0 训练，纯 framing；先化解审稿人质疑。
+
+### 轨 B（受控实验，需代码）—— 架构受控公平基线
+
+只让"手 decoder 架构"一个变量不同，回答"我们的 decoder 是否真比 OSX 强（而非只是喂了数据）"：
+
+| 维度 | 我们 | 公平基线 |
+|---|---|---|
+| backbone | 冻结(encoder/body/box/ROI) | **同样冻结** |
+| 训练数据 | IH 0.35 / UBody 0.25 / MSCOCO 0.40 | **完全相同** |
+| 可训部分 | pytorch DCNv4 手头 + my_decoder + 手 regressor | **OSX 原生 MMCV 手 decoder + 头** |
+| warm-start | osx_l.pth.tar（未见 InterHand）| **同起点** |
+| schedule/LR/epoch | 我们的配方 | **相同** |
+
+**判定矩阵：**
+
+| OSX-finetuned InterHand PA | 解读 |
+|---|---|
+| ≈ 16-17（追上我们）| −14% 是数据带来的，decoder ≈ OSX → 方法贡献弱，走轨 A 的 system/held-out 定位 |
+| 明显 > 我们（~18）| 我们 decoder 真更强 → 硬方法贡献 |
+| ≈ 19.58（没动）| OSX decoder 吃不动 InterHand → 强赢（需排除）|
+
+**无论结果如何都必须做**——它决定论文方法 claim 的强度。
+
+**需要的代码（轨 B 实施中，2026-06-30 起）：**
+1. 给 `OSX.py` 加 `frozen_modules`/`freeze_modules()`/`trainable_module_names`，照 `model_core.py:69-149` 模式：冻 encoder/body_position_net/body_regressor/box_net/hand_roi_net/face 相关，只训 hand_decoder + 手头/regressor。
+2. 两步 save/load（frozen backbone + lightweight trained），key 映射对上 MMCV decoder。
+3. 跑通 `freeze_modules()` + `_verify_freeze_status`，smoke 训练。
+- 风险：MMCV decoder 在本 harness 下训练未测过，可能需调几处 key/接口。
+
+### 建议
+
+轨 A 现在就定（免费、立即生效）；轨 B 作为决定方法强度的实验并行推进。两者不互斥：A 守底（held-out 故事一定成立），B 争上限（若证明 decoder 更强则方法贡献坐实）。
 
 ---
 

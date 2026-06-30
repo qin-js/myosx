@@ -4,6 +4,7 @@
 - 6-28/6-29 实验（tipw、group attribution、guarded/freeze WA2D）：experiment_log.md 对应日期条目；详细 handoff 已归档到 docs/archive/{hand_tipw_wa2d_handoff,recent_experiment_summary_2026-06-29}.md；WA2D 方法设计仍在 docs/wa2d_group_attribution.md。
 - 6-30：WA2D bootstrap/NaN 高置信根因/梯度稳定补丁见 experiment_log.md 2026-06-30——纠正了 6-29 的"稳定 freeze 路线"说法（freeze 只把 NaN 从 posnet itr820 挪到 decoder itr1295），并补了 frz500 仍输 OSX +0.0068(88% distal) 的配对 bootstrap。
 - 6-30 追加：frz500 guardrail 已回（InterHand PA 17.00 正好踩 kill 线；HInt `[wa]` 0.480、EHF Face 6.15 守住；UBody `[wa]` 0.226 仍输 OSX）。结论：guardrail 基本过但无报告余量，frz500/freeze 只能作 WA2D 触顶诊断，不作为主报告点或稳定 recipe。
+- 6-30 收口：**WA2D direct-loss 线已收口**。weight=0.05 是封口点——比 frz500 更差（`[wa]` Δ+0.0081 vs +0.0068）且仍 NaN@767（NaN 与 weight 无关、根在 DCNv4 反向 kernel）。三堵墙（指标天花板/数值 NaN/InterHand 侵蚀）全数据封死，sweep 无信息增量。**转论文**：① InterHand 公平基线（同数据微调 OSX）守头条；② rotmat pose loss（已实现未试，仅 InterHand 侧 polish）；③ teacher distillation 锁 UBody parity；④ 诚实定位 held-out 赢 + in-domain 追平。
 
 更新时间：2026-06-30
 
@@ -33,10 +34,12 @@
 
 ## 下一步建议
 
-1. **先验证 6-30 WA2D 梯度补丁**：从固定 warm-start `hand_tipw itr3000`、posnet 不冻、WA2D weight 0.1、安全默认跑过旧崩溃点 itr1295。
-2. **做干净 MSCOCO source ablation**：`sources=ubody` vs `ubody,mscoco` 两臂必须同配置、同 warm-start；旧 `hand_wa2d_distal` 的 ubody-only 结果不算（weight 1.0 激进且无守卫）。
-3. **不要把 frz500/freeze 当主线**：它只是崩溃前快照，InterHand PA=17.00 无余量，且仍显著输 OSX；若写论文，只作为 WA2D 缩小 gap 但触顶的负结果/诊断。
-4. **处理 InterHand 公平基线**：补一个"在 InterHand 上同数据微调的 OSX"，或把 headline 让位给 held-out HInt。身体 shape T1(`--train_body_shape`)仍是独立附带线，默认关闭。
+**WA2D 线已收口（见上 6-30 收口）。主线转 InterHand 公平基线——详细计划见 `docs/post_stage3_roadmap.md` §0″。**
+
+1. **轨 A（零训练）**：headline 让给 held-out HInt（两模型都没训过、我们 0.487→0.480 赢）；InterHand 降级为诚实 in-domain 结果（标注 fine-tune-vs-zero-shot caveat）。立刻化解审稿人质疑。
+2. **轨 B（受控实验，实施中）**：给 `OSX.py` 补冻结脚手架，用**相同冻结 split + 相同数据 + 相同 schedule** 微调 OSX 原生 MMCV 手 decoder，对比我们的 pytorch decoder。判定矩阵见 roadmap §0″：追上=数据带来的、更差=我们 decoder 真更强。决定方法 claim 强度，必做。
+3. **rotmat pose loss**（`use_hand_rotmat_pose_loss`，已实现未试）：便宜低风险的 InterHand 侧 polish（仅 InterHand/BEDLAM 可靠 hand pose GT 处 fire，UBody 伪 GT 吃不到），当 ablation。
+4. **teacher distillation**：把 UBody 锁到 parity（追平、超不过 teacher）。身体 shape T1(`--train_body_shape`)仍是独立附带线，默认关闭。
 
 ## 常用评估命令（pytorch 路径现在自动带编码器修复）
 
