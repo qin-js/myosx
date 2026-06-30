@@ -495,8 +495,11 @@ def main():
         posnet_grad_clip=args.posnet_grad_clip,
     )
 
-    if cfg.decoder_setting != 'pytorch':
-        raise ValueError("Current training phase/freeze code requires --decoder_setting pytorch")
+    if cfg.decoder_setting not in ('pytorch', 'normal'):
+        raise ValueError(
+            "Training phase/freeze code supports --decoder_setting pytorch (main path) "
+            "or normal (track-B OSX architecture-controlled fair baseline); got %s"
+            % cfg.decoder_setting)
 
     if args.bedlam_max_samples is not None:
         cfg.bedlam_max_samples = args.bedlam_max_samples

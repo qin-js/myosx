@@ -368,14 +368,18 @@ class Trainer(Base):
 
         for k, v in pretrained_dict.items():
             
-            # [映射逻辑 1]: 显式跳过全新重写的模块 (让它们保持随机初始化)
-            if k.startswith('hand_decoder.') or k.startswith('face_decoder.') or \
-               k.startswith('hand_position_net.') or k.startswith('face_position_net.'):
-                skipped_keys.append(k)
-                continue
-                
-            #[映射逻辑 2]: Encoder 的 last_norm 名字替换
-            if 'encoder.last_norm.' in k:
+            # [映射逻辑 1]: pytorch 路径显式跳过全新重写的模块(DCNv4/my_decoder)，
+            # 让它们随机初始化。track B(normal/OSX)这些就是原生 MMCV 模块、
+            # osx_l.pth.tar 含其权重 → 必须按 identity 加载当 warm-start，不跳过。
+            if cfg.decoder_setting == 'pytorch':
+                if k.startswith('hand_decoder.') or k.startswith('face_decoder.') or \
+                   k.startswith('hand_position_net.') or k.startswith('face_position_net.'):
+                    skipped_keys.append(k)
+                    continue
+
+            #[映射逻辑 2]: Encoder last_norm->norm 仅 pytorch StandardViT 需要；
+            # normal/OSX 原生即 last_norm，identity 加载，不改名。
+            if cfg.decoder_setting == 'pytorch' and 'encoder.last_norm.' in k:
                 k = k.replace('encoder.last_norm.', 'encoder.norm.')
                 
             # 找到对应在你当前 DataParallel 模型中的 key
@@ -721,6 +725,23 @@ class Tester(Base):
                 self.logger.warning("  ⚠️  unexpected tensors: %d" % len(unexpected))
                 for k in unexpected[:10]:
                     self.logger.warning("     %s" % k)
+
+            # Track B: overlay the lightweight trained hand modules on top of the
+            # pristine OSX backbone. The snapshot keys already carry the OSX module
+            # names (module.hand_position_net/hand_decoder/hand_regressor.*), so this
+            # is an identity overlay — no remap. Without it, normal eval would score
+            # stock OSX (the 19.58 baseline). Only fires when a snapshot is given.
+            if cfg.continue_train_path:
+                self.logger.info(
+                    "  Track B: overlaying trained hand modules from %s" % cfg.continue_train_path)
+                tckpt = torch.load(cfg.continue_train_path, map_location='cpu')
+                tstate = tckpt['network'] if 'network' in tckpt else tckpt
+                t_missing, t_unexpected = model.load_state_dict(tstate, strict=False)
+                self.logger.info(
+                    "  overlaid %d trained tensors (unexpected=%d)" % (
+                        len(tstate) - len(t_unexpected), len(t_unexpected)))
+                for k in list(t_unexpected)[:10]:
+                    self.logger.warning("     unexpected trained key: %s" % k)
             model.eval()
 
             self.model = model

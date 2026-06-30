@@ -43,10 +43,60 @@ class Model(nn.Module):
         self.body_num_joints = len(smpl_x.pos_joint_part['body'])
         self.hand_num_joints = len(smpl_x.pos_joint_part['rhand'])
 
-        self.trainable_modules = [self.encoder, self.body_position_net, self.body_regressor,
-                                  self.box_net, self.hand_position_net, self.hand_roi_net, self.hand_regressor,
-                                  self.face_regressor, self.face_roi_net, self.face_position_net]
-        self.special_trainable_modules = [self.hand_decoder, self.face_decoder]
+        # ---- Track B: architecture-controlled InterHand fair baseline (2026-06-30) ----
+        # The normal/OSX path was eval-only in this fork. This scaffolding mirrors
+        # model_core.py:69-160 so OSX can fine-tune ONLY its hand head stack
+        # (hand_position_net + hand_decoder + hand_regressor — all original MMCV)
+        # on a frozen OSX backbone, with the SAME frozen split / data / schedule as
+        # our pytorch hand finetune, isolating just the decoder architecture.
+        self.frozen_modules = [
+            'encoder', 'body_position_net', 'body_regressor', 'box_net',
+            'hand_roi_net', 'face_roi_net', 'face_position_net',
+            'face_decoder', 'face_regressor',
+        ]
+        # normal-lr group (hand soft-argmax head + hand keypoint decoder)
+        self.trainable_modules = [self.hand_position_net, self.hand_decoder]
+        # small-lr group (hand regressor, finetuned from pretrained)
+        self.special_trainable_modules = [self.hand_regressor]
+        # names used by save_model / freeze / _verify_freeze_status
+        self.trainable_module_names = ['hand_position_net', 'hand_decoder', 'hand_regressor']
+        # body-shape T1 is pytorch-only; keep empty so shared harness code no-ops.
+        self.body_shape_trainable_prefixes = []
+
+    def freeze_modules(self):
+        """Track B: freeze the OSX backbone, train only the hand head stack.
+        Mirrors model_core.Model.freeze_modules (requires_grad=False + eval BN on
+        frozen modules; requires_grad=True + train() on the trainable ones)."""
+        for module_name in self.frozen_modules:
+            module = getattr(self, module_name)
+            module.eval()
+            for param in module.parameters():
+                param.requires_grad = False
+        for module in self.trainable_modules + self.special_trainable_modules:
+            module.train()
+            for param in module.parameters():
+                param.requires_grad = True
+
+    def train(self, mode=True):
+        """Keep frozen modules in eval() so their BN uses running stats (avoids
+        train/test mismatch on the frozen backbone). Mirrors model_core."""
+        super().train(mode)
+        if mode:
+            for module_name in self.frozen_modules:
+                getattr(self, module_name).eval()
+        return self
+
+    def set_training_phase(self, phase):
+        """Called by train.py:_configure_training_phase. OSX track B only ever
+        trains hands; this mirrors the pytorch phase schedule's hand_regressor
+        toggle. _configure_training_phase re-sets per-module grads right after, so
+        this just keeps state consistent and must not crash."""
+        self.training_phase = phase
+        train_reg = (phase != 1) or getattr(cfg, 'phase1_train_hand_regressor', True)
+        self.hand_regressor.train(train_reg)
+        for param in self.hand_regressor.parameters():
+            param.requires_grad = train_reg
+        print(f"Phase {phase}: OSX track-B hand finetuning (hand_regressor trainable={train_reg})")
 
     def get_camera_trans(self, cam_param):
         # camera translation
