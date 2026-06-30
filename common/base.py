@@ -381,6 +381,19 @@ class Trainer(Base):
             # normal/OSX 原生即 last_norm，identity 加载，不改名。
             if cfg.decoder_setting == 'pytorch' and 'encoder.last_norm.' in k:
                 k = k.replace('encoder.last_norm.', 'encoder.norm.')
+
+            # [映射逻辑 3]: track B(normal/OSX). osx_l.pth.tar 用上游命名
+            # (backbone/body_rotation_net/hand_rotation_net)，与构建模型
+            # (encoder/body_regressor/hand_regressor) 不同。必须做与 normal Tester
+            # `_make_model` 相同的 remap，否则冻结 backbone 与可训 hand_regressor 会留成
+            # 随机初始化、毁掉基线（下方 frozen-missing 检查对 normal 已改为 fatal）。
+            if cfg.decoder_setting != 'pytorch':
+                if k.startswith('backbone.'):
+                    k = 'encoder.' + k[len('backbone.'):]
+                elif k.startswith('body_rotation_net.'):
+                    k = 'body_regressor.' + k[len('body_rotation_net.'):]
+                elif k.startswith('hand_rotation_net.'):
+                    k = 'hand_regressor.' + k[len('hand_rotation_net.'):]
                 
             # 找到对应在你当前 DataParallel 模型中的 key
             target_key = 'module.' + k
@@ -421,6 +434,25 @@ class Trainer(Base):
             for k in frozen_missing[:10]: self.logger.warning(f"     {k}")
         else:
             self.logger.info(f"  🎯 冻结模块安全检查: 完美! 所有冻结参数均已成功加载预训练权重。")
+
+        # Track B: a broken warm-start must FAIL, not warn. The trainable hand
+        # modules (hand_position_net/hand_decoder/hand_regressor) are the baseline's
+        # whole point — if osx_l.pth.tar keys didn't map onto them they'd train from
+        # random and silently invalidate the comparison. Require BOTH the frozen
+        # backbone and the trainable hand modules to be fully covered for normal/OSX.
+        if cfg.decoder_setting != 'pytorch':
+            trainable_missing = [
+                name for name, _ in model.named_parameters()
+                if name.replace('module.', '', 1).split('.')[0] in model.module.trainable_module_names
+                and name not in loaded_keys]
+            if frozen_missing or trainable_missing:
+                for k in (frozen_missing + trainable_missing)[:20]:
+                    self.logger.error(f"     UNCOVERED: {k}")
+                raise RuntimeError(
+                    "Track B warm-start incomplete: %d frozen + %d trainable params not loaded "
+                    "from %s (key-naming mismatch). Fix the remap before training — a partial "
+                    "load silently invalidates the fair baseline." % (
+                        len(frozen_missing), len(trainable_missing), ckpt_path))
         # (可选) 同时加载回归网络的预训练权重用于微调
         # self._load_regressor_weights(model, pretrained_dict)
 

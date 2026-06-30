@@ -278,8 +278,28 @@ class Model(nn.Module):
 
         # 3. Hand and Face BBox Estimation
         lhand_bbox_center, lhand_bbox_size, rhand_bbox_center, rhand_bbox_size, face_bbox_center, face_bbox_size = self.box_net(img_feat, body_joint_hm.detach())
-        lhand_bbox = restore_bbox(lhand_bbox_center, lhand_bbox_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
-        rhand_bbox = restore_bbox(rhand_bbox_center, rhand_bbox_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
+
+        # Track B parity with the pytorch path (model_core.py:683-705): for
+        # hand-only datasets (InterHand) the frozen top-down box_net emits
+        # degenerate whole-frame boxes, so crop with the GT hand box instead.
+        # Without this the OSX baseline would see different ROI crops than our
+        # pytorch model on InterHand, confounding decoder architecture with crop
+        # quality. box_net predictions stay untouched for the bbox loss below.
+        roi_lhand_center, roi_lhand_size = lhand_bbox_center, lhand_bbox_size
+        roi_rhand_center, roi_rhand_size = rhand_bbox_center, rhand_bbox_size
+        if getattr(cfg, 'inject_gt_hand_bbox', False) and 'is_hand_only' in meta_info \
+                and 'lhand_bbox_center' in targets:
+            box_device = roi_lhand_center.device
+            hand_only = meta_info['is_hand_only'].to(box_device).view(-1) > 0
+            l_use = (hand_only & (meta_info['lhand_bbox_valid'].to(box_device).view(-1) > 0)).view(-1, 1)
+            r_use = (hand_only & (meta_info['rhand_bbox_valid'].to(box_device).view(-1) > 0)).view(-1, 1)
+            roi_lhand_center = torch.where(l_use, targets['lhand_bbox_center'].to(box_device), roi_lhand_center)
+            roi_lhand_size = torch.where(l_use, targets['lhand_bbox_size'].to(box_device), roi_lhand_size)
+            roi_rhand_center = torch.where(r_use, targets['rhand_bbox_center'].to(box_device), roi_rhand_center)
+            roi_rhand_size = torch.where(r_use, targets['rhand_bbox_size'].to(box_device), roi_rhand_size)
+
+        lhand_bbox = restore_bbox(roi_lhand_center, roi_lhand_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
+        rhand_bbox = restore_bbox(roi_rhand_center, roi_rhand_size, cfg.input_hand_shape[1] / cfg.input_hand_shape[0], 2.0).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
         face_bbox = restore_bbox(face_bbox_center, face_bbox_size, cfg.input_face_shape[1] / cfg.input_face_shape[0], 1.5).detach()  # xyxy in (cfg.input_body_shape[1], cfg.input_body_shape[0]) space
 
         # 4. Differentiable Feature-level Hand/Face Crop-Upsample

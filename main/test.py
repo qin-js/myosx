@@ -480,9 +480,15 @@ def main():
     result_filename = _testset_result_name(args)
 
     if not use_pytorch_decoder:
-        if args.continue_train_path or args.continue_train_paths:
-            print("[eval] decoder_setting != pytorch，忽略 continue_train_path(s)，只评估 pretrained_model_path")
-        cfg.continue_train_path = ""
+        # Track B: normal/OSX eval overlays the trained hand modules from a single
+        # continue_train_path (Tester._make_model). The multi-checkpoint sweep
+        # (continue_train_paths) stays pytorch-only. Empty path -> stock OSX (the
+        # 19.58 baseline); non-empty -> the fine-tuned OSX fair baseline.
+        if args.continue_train_paths:
+            print("[eval] decoder_setting != pytorch: continue_train_paths(多 ckpt 扫描)仅 pytorch 支持，忽略")
+        cfg.continue_train_path = args.continue_train_path or ""
+        if cfg.continue_train_path:
+            print(f"[eval] track B: normal 评估叠加微调手模块 {cfg.continue_train_path}")
         _set_base_output_dirs(base_result_dir, base_vis_dir, base_log_dir)
         _run_eval_for_current_checkpoint(args, Tester, result_filename)
         return
