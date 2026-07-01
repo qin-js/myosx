@@ -8,6 +8,85 @@ DEFAULT_PHASE1_EPOCHS = 10
 HAND_WA_2D_VALID_SOURCES = {'ubody', 'mscoco', 'coco', 'interhand', 'all'}
 
 
+def _split_csv_or_space(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_items = value.replace('，', ',').replace('、', ',').split(',')
+    else:
+        raw_items = []
+        for item in value:
+            raw_items.extend(str(item).replace('，', ',').replace('、', ',').split(','))
+    return [item.strip() for item in raw_items if item.strip()]
+
+
+def _parse_trainset_3d(value):
+    names = _split_csv_or_space(value)
+    if names is None:
+        return None
+    if not names:
+        raise ValueError('--trainset_3d must contain at least one dataset name')
+    invalid = [name for name in names if name not in cfg.dataset_list]
+    if invalid:
+        raise ValueError(
+            'Invalid --trainset_3d dataset(s): %s; valid datasets are %s' % (
+                ','.join(invalid), ','.join(cfg.dataset_list)))
+    return names
+
+
+def _parse_trainset_3d_sample_prob(value, trainset_3d):
+    items = _split_csv_or_space(value)
+    if items is None:
+        return None
+    if not items:
+        raise ValueError('--trainset_3d_sample_prob must not be empty when provided')
+
+    if any('=' in item for item in items):
+        prob = {}
+        for item in items:
+            if '=' not in item:
+                raise ValueError(
+                    '--trainset_3d_sample_prob cannot mix name=value and positional values')
+            name, raw_value = item.split('=', 1)
+            name = name.strip()
+            if name not in trainset_3d:
+                raise ValueError(
+                    '--trainset_3d_sample_prob includes %s, which is not in trainset_3d=%s' % (
+                        name, ','.join(trainset_3d)))
+            prob[name] = float(raw_value)
+    else:
+        if len(items) != len(trainset_3d):
+            raise ValueError(
+                '--trainset_3d_sample_prob positional values must match --trainset_3d length '
+                '(%d values for %d datasets)' % (len(items), len(trainset_3d)))
+        prob = {name: float(raw_value) for name, raw_value in zip(trainset_3d, items)}
+
+    missing = [name for name in trainset_3d if name not in prob]
+    if missing:
+        raise ValueError(
+            '--trainset_3d_sample_prob missing probabilities for: %s' % ','.join(missing))
+    values = list(prob.values())
+    if any(v < 0 for v in values) or sum(values) <= 0:
+        raise ValueError('--trainset_3d_sample_prob values must be non-negative and sum to > 0')
+    return prob
+
+
+def _validate_trainset_3d_sample_prob(trainset_3d, prob_cfg, weighted_sampling):
+    if not weighted_sampling or len(trainset_3d) <= 1:
+        return
+    if not prob_cfg:
+        raise ValueError(
+            'Weighted 3D dataset sampling is enabled for multiple trainset_3d entries, '
+            'but trainset_3d_sample_prob is empty. Pass --trainset_3d_sample_prob or '
+            '--disable_weighted_dataset_sampling.')
+    missing = [name for name in trainset_3d if name not in prob_cfg]
+    if missing:
+        raise ValueError(
+            'trainset_3d_sample_prob missing probabilities for %s. '
+            'Pass --trainset_3d_sample_prob with all trainset_3d entries or '
+            '--disable_weighted_dataset_sampling.' % ','.join(missing))
+
+
 def _normalize_hand_wa_2d_sources(source_cfg):
     if isinstance(source_cfg, str):
         raw = source_cfg.replace('，', ',').replace('、', ',')
@@ -207,6 +286,15 @@ def parse_args():
     parser.add_argument('--num_thread', type=int, default=4)
     parser.add_argument('--end_epoch', type=int, default=10)
     parser.add_argument('--train_batch_size', type=int, default=32)
+    parser.add_argument('--trainset_3d', nargs='+', default=None,
+                        help='覆盖 cfg.trainset_3d；支持空格或逗号分隔，如 '
+                             '--trainset_3d BEDLAM InterHand26M UBody 或 '
+                             '--trainset_3d BEDLAM,InterHand26M,UBody')
+    parser.add_argument('--trainset_3d_sample_prob', nargs='+', default=None,
+                        help='覆盖 cfg.trainset_3d_sample_prob；支持 name=value 或按 '
+                             '--trainset_3d 顺序给值，如 '
+                             '--trainset_3d_sample_prob BEDLAM=0.4,InterHand26M=0.4,UBody=0.2 '
+                             '或 --trainset_3d_sample_prob 0.4 0.4 0.2')
     parser.add_argument('--encoder_setting', type=str, default='osx_l', choices=['osx_b', 'osx_l'])
     parser.add_argument('--decoder_setting', type=str, default='pytorch', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
     parser.add_argument('--agora_benchmark', action='store_true')
@@ -476,11 +564,19 @@ def _configure_training_phase(trainer, phase, remaining_epochs):
 def main():
     print('### Argument parse and create log ###')
     args = parse_args()
+    trainset_3d = _parse_trainset_3d(args.trainset_3d)
+    if trainset_3d is None:
+        trainset_3d = cfg.trainset_3d
+    trainset_3d_sample_prob = _parse_trainset_3d_sample_prob(
+        args.trainset_3d_sample_prob,
+        trainset_3d,
+    )
     cfg.set_args(args.gpu_ids, args.lr, args.continue_train)
     cfg.set_additional_args(
         exp_name=args.exp_name,
         num_thread=args.num_thread,
         train_batch_size=args.train_batch_size,
+        trainset_3d=trainset_3d,
         encoder_setting=args.encoder_setting,
         decoder_setting=args.decoder_setting,
         end_epoch=args.end_epoch,
@@ -497,6 +593,20 @@ def main():
         posnet_lr_mult=args.posnet_lr_mult,
         posnet_grad_clip=args.posnet_grad_clip,
     )
+    if trainset_3d_sample_prob is not None:
+        cfg.trainset_3d_sample_prob = trainset_3d_sample_prob
+    _validate_trainset_3d_sample_prob(
+        cfg.trainset_3d,
+        getattr(cfg, 'trainset_3d_sample_prob', None),
+        getattr(cfg, 'use_weighted_dataset_sampling', False),
+    )
+    print('>>> trainset_3d: %s' % ','.join(cfg.trainset_3d))
+    if getattr(cfg, 'trainset_3d_sample_prob', None):
+        prob_str = ','.join(
+            '%s=%s' % (name, cfg.trainset_3d_sample_prob.get(name, 'NA'))
+            for name in cfg.trainset_3d
+        )
+        print('>>> trainset_3d_sample_prob: %s' % prob_str)
 
     if cfg.decoder_setting not in ('pytorch', 'normal'):
         raise ValueError(
