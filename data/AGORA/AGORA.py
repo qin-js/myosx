@@ -19,7 +19,9 @@ class AGORA(torch.utils.data.Dataset):
         self.transform = transform
         self.data_split = data_split
         self.data_path = osp.join(cfg.data_dir, 'AGORA', 'data')
-        self.resolution = (2160, 3840)  # height, width. one of (720, 1280) and (2160, 3840)
+        self.resolution = tuple(getattr(cfg, 'agora_resolution', (720, 1280)))
+        if self.resolution not in ((720, 1280), (2160, 3840)):
+            raise ValueError('AGORA resolution must be one of (720, 1280) and (2160, 3840)')
         self.test_set = 'test' if cfg.agora_benchmark else 'val'  # val, test
 
         # AGORA joint set
@@ -80,6 +82,28 @@ class AGORA(torch.utils.data.Dataset):
 
         self.datalist = self.load_data()
 
+    def _resolve_agora_image_path(self, file_name):
+        candidates = [osp.join(self.data_path, file_name)]
+        parts = file_name.split('/')
+        if len(parts) > 1:
+            candidates.append(osp.join(cfg.data_dir, 'AGORA', *parts))
+        if len(parts) > 1 and parts[0] in ('1280x720', '3840x2160'):
+            candidates.append(osp.join(cfg.data_dir, 'AGORA', *parts[1:]))
+        candidates.append(osp.join(cfg.data_dir, 'AGORA', osp.basename(file_name)))
+        for path in candidates:
+            if osp.isfile(path):
+                return path
+        return candidates[0]
+
+    def _load_gt_array(self, path, shape):
+        if osp.isfile(path):
+            with open(path) as f:
+                return np.array(json.load(f), dtype=np.float32).reshape(shape)
+        npy_path = osp.splitext(path)[0] + '.npy'
+        if osp.isfile(npy_path):
+            return np.load(npy_path).astype(np.float32, copy=False).reshape(shape)
+        raise FileNotFoundError(path + ' (or ' + npy_path + ')')
+
     def load_data(self):
         datalist = []
         if self.data_split == 'train' or (self.data_split == 'test' and self.test_set == 'val'):
@@ -102,7 +126,7 @@ class AGORA(torch.utils.data.Dataset):
 
                 if self.resolution == (720, 1280):
                     img_shape = self.resolution
-                    img_path = osp.join(self.data_path, img['file_name_1280x720'])
+                    img_path = self._resolve_agora_image_path(img['file_name_1280x720'])
 
                     # convert to current resolution
                     bbox = np.array(ann['bbox']).reshape(2, 2)
@@ -214,7 +238,7 @@ class AGORA(torch.utils.data.Dataset):
 
             for filename in bboxs.keys():
                 if self.resolution == (720, 1280):
-                    img_path = osp.join(self.data_path, 'test', filename)
+                    img_path = self._resolve_agora_image_path(osp.join('test', filename))
                     img_shape = self.resolution
                     person_num = len(bboxs[filename])
                     for pid in range(person_num):
@@ -464,8 +488,7 @@ class AGORA(torch.utils.data.Dataset):
 
             if self.test_set == 'val':
                 # gt load
-                with open(data['verts_path']) as f:
-                    verts = np.array(json.load(f)).reshape(-1, 3)
+                verts = self._load_gt_array(data['verts_path'], (-1, 3))
 
                 inputs = {'img': img}
                 targets = {'smplx_mesh_cam': verts}
@@ -621,16 +644,25 @@ class AGORA(torch.utils.data.Dataset):
         return eval_result
 
     def print_eval_result(self, eval_result):
-
-        print('AGORA test results are dumped at: ' + osp.join(cfg.result_dir, 'predictions'))
+        result_lines = [
+            'AGORA test results are dumped at: ' + osp.join(cfg.result_dir, 'predictions')
+        ]
 
         if self.data_split == 'test' and self.test_set == 'test':  # do not print. just submit the results to the official evaluation server
+            print('\n'.join(result_lines))
+            with open(osp.join(cfg.result_dir, 'result.txt'), 'w') as f:
+                f.write('\n'.join(result_lines) + '\n')
             return
 
-        print('PA MPVPE (All): %.2f mm' % np.mean(eval_result['pa_mpvpe_all']))
-        print('PA MPVPE (Hands): %.2f mm' % np.mean(eval_result['pa_mpvpe_hand']))
-        print('PA MPVPE (Face): %.2f mm' % np.mean(eval_result['pa_mpvpe_face']))
-
-        print('MPVPE (All): %.2f mm' % np.mean(eval_result['mpvpe_all']))
-        print('MPVPE (Hands): %.2f mm' % np.mean(eval_result['mpvpe_hand']))
-        print('MPVPE (Face): %.2f mm' % np.mean(eval_result['mpvpe_face']))
+        result_lines += [
+            'PA MPVPE (All): %.2f mm' % np.mean(eval_result['pa_mpvpe_all']),
+            'PA MPVPE (Hands): %.2f mm' % np.mean(eval_result['pa_mpvpe_hand']),
+            'PA MPVPE (Face): %.2f mm' % np.mean(eval_result['pa_mpvpe_face']),
+            '',
+            'MPVPE (All): %.2f mm' % np.mean(eval_result['mpvpe_all']),
+            'MPVPE (Hands): %.2f mm' % np.mean(eval_result['mpvpe_hand']),
+            'MPVPE (Face): %.2f mm' % np.mean(eval_result['mpvpe_face']),
+        ]
+        print('\n'.join(result_lines))
+        with open(osp.join(cfg.result_dir, 'result.txt'), 'w') as f:
+            f.write('\n'.join(result_lines) + '\n')

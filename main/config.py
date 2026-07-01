@@ -261,6 +261,7 @@ class Config:
     lr_mult = 0.1
     smplx_loss_weight = 1
     agora_benchmark = False
+    agora_resolution = (720, 1280)  # height, width; current validation images are 1280x720
 
     ## testing config
     test_batch_size = 16

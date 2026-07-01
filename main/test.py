@@ -217,7 +217,7 @@ def parse_args():
     parser.add_argument('--test_batch_size', type=int, default=16 )
     parser.add_argument('--encoder_setting', type=str, default='osx_l', choices=['osx_b', 'osx_l'])
     parser.add_argument('--decoder_setting', type=str, default='wo_face_decoder', choices=['normal', 'wo_face_decoder', 'wo_decoder', 'pytorch'])
-    parser.add_argument('--testset', type=str, default='EHF', choices=['EHF', 'HAA500', 'InterHand26M', 'UBody', 'HInt'])
+    parser.add_argument('--testset', type=str, default='EHF', choices=['EHF', 'HAA500', 'InterHand26M', 'UBody', 'HInt', 'AGORA'])
     parser.add_argument('--interhand_eval_split', type=str, default='test', choices=['train', 'val', 'test'],
                         help='InterHand26M: which annotation split to load for eval (files only; '
                              'augmentation stays identity). "train" = contaminated upper bound '
