@@ -8,15 +8,21 @@
 
 ---
 
-## 0⁗. 2026-07-01 更新（四）：H4W++ 竞品 + 目标下沉「全绿 vs stock OSX」+ 决定上结构性 decoder
+## 0⁗. 2026-07-01 更新（四）：H4W++ 竞品 + 目标下沉「全绿 vs stock OSX」+ 结构性 decoder（已实现，gate 训练中）
 
 ### 关键决策（本会话与用户敲定）
 
 - **目标定位下沉**：不追顶会。目标 = **相对 stock OSX 全面提升（全绿，无论多小）+ 一个能写成一句话的方法贡献**。可发性判断 = **够中低档**（workshop 近必中；TCSVT/TMM/PR/CVIU/IVC/Neurocomputing/The Visual Computer 现实可期；3DV/WACV/BMVC 够一够），前提是下面三件事到位。
-- **决定上结构性 decoder 大改**：§0‴ 已定位的"特征精修器→坐标精修器"（每层出坐标 + 每层 aux 监督 + 迭代参考点 + 层数↑）从"最高杠杆候选"升级为**决定要做**。它既是方法贡献来源，也是论文活过审稿的闸。
+- **结构性 decoder 大改：已实现+提交（commit `0e30614`）、smoke 过、gate 训练中。** 本轮只做 §0‴ 根因 **(1)+(2)**：每层坐标头 + 迭代参考点 + 每层 aux 监督（`HandDecoder` 特征精修器→坐标精修器）+ detach `query_init` 封 DCNv4 NaN。**层数 3→6、去 topo/occlusion、soft-argmax 量化刻意留作后续单独 ablation**（保持单变量）。它既是方法贡献来源，也是论文活过审稿的闸。实现/smoke/配方细节见 `experiment_log.md` 7-01。
 - **生死闸（每天盯的唯一数字）**：新 decoder 的 InterHand PA 必须钻到**公平基线 16.29↓**（OSX decoder 同条件微调、且仍在降），**不是只打 stock 19.58**。
   - 过闸 → 方法论文成立，`paper_table_plan.md` 的 Table 1/3/5 顺手填绿。
   - 不过闸 → 退「高效可复现配方 + 冻结骨干分析」分析型论文（更低档但仍可发），**不得声称方法优越性**。
+
+### gate 配方与起点纪律（务必同配方，否则 16.29 不可比）
+
+- **配方 = snap2(`joint_polish_f`) 原样**：`lr 5e-5 / batch 64 / end_epoch 4 / phase1_epochs 2 / posnet_lr_mult 0.5 / lr_mult 0.1`。（初版误抄 CLAUDE.md 旧例 lr 2e-4/batch48/end14/phase1 10，用户 catch 已纠正。）
+- **起点 = `osx_l` 冷启、4 epoch**：snap2 与公平基线都这么做 → 新 decoder 也同起点同预算才是干净单变量；暖启 snap2 会给 head start + 8-epoch 预算失衡，那是"在 snap2 上再加精修头"的另一实验、非本闸。
+- **配方一致性 caveat**：本地 `osx_fairbase_smoke` 用 lr 1e-5（仅 snap2/poseur_iso 是 5e-5）；须确认产出 16.29 的 OSX-ft 与 snap2 同配方，否则基线自身就不公平。用户确认本地无正式 osx_fairbase、已自行核对参照无误。
 
 ### 新竞品：Hand4Whole++（CVPR 2026，Moon，必须对标）
 

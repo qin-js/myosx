@@ -19,6 +19,18 @@
 - **新竞品 Hand4Whole++（CVPR2026，Moon，OSX 同源）**：冻结 SMPLer-X 身体 + WiLoR 手专家 + DWPose，只训一个零卷积 ControlNet（"Conditional Hands Modulator"），最终手 mesh = WiLoR MANO 经 Procrustes graft 到 SMPL-X 腕。**坐实"提升 whole-body 手部"的新意轴是融合冻结专家、不是 decoder**，必须 cite/对标（差异化=单模型、不挂外部专家/检测器）。详见 `post_stage3_roadmap.md` §0⁗、记忆 `h4wpp-competitor.md`。
 - **表格/实验规划已固化** → `docs/paper_table_plan.md`。
 
+### 结构性 decoder 实现 + smoke 通过 + gate 配方锁定（gate 训练中）
+
+**已实现并提交**（commit `0e30614`）：HandDecoder 从"特征精修器"改为"坐标精修器"——每层 `bbox_embed` 坐标头（末层零初始化）+ 迭代参考点（logit/sigmoid，镜像 `vit.py` PoseurDecoder）+ 返回 `(features, per_layer_coords)`；`model_core.py:725` detach `query_init`（切 decoder→DCNv4 NaN 路径，`cfg.detach_hand_decoder_query` 默认 True）+ 新增 `loss['hand_aux_coord']`（每层坐标 vs 重映射手部 GT + BEDLAM 掩码 trunc，`cfg.hand_aux_coord_loss_weight=1.0`）。PoseurDecoder 同步改 2-tuple。**只动根因 (1)+(2)**，topo/occlusion + 3 层 + 同 loss 保持不变（单变量）。
+
+**smoke 通过**（`output/smoke_coordrefiner`，batch4 ~2100 iter，暖启 snap2）：冻结骨干全加载、warm-start 覆盖 471 张量、freeze 检查过；`loss_hand_aux_coord` 有限（~0.44，贴 soft-argmax 基线，因 bbox_embed 零初始化）；**全程 `skipped=0`、零 NaN → detach 实测封住 NaN 路径**（detach vs skip 之争，数据判 detach）。
+
+**gate 配方锁定（用户 catch 修正）**：初版误抄 CLAUDE.md 旧例（lr 2e-4/batch48/end14/phase1 10，全错）。snap2(`joint_polish_f`) 真实配方 = **lr 5e-5 / batch 64 / end_epoch 4 / phase1_epochs 2 / posnet_lr_mult 0.5 / lr_mult 0.1**；gate 必须同配方否则与 16.29 不可比。
+- **起点纪律**：snap2 与公平基线都是 `osx_l` 冷启训 4 epoch → 干净 gate 应**同样 osx_l 冷启 4 epoch**（只 decoder 架构不同=单变量），非暖启 snap2（head start + 预算失衡）。暖启 snap2 版是"在 snap2 上再加精修头"的另一实验。
+- **配方一致性 caveat**：本地 `osx_fairbase_smoke` 用 lr **1e-5**（非 5e-5），仅 snap2/poseur_iso 是 5e-5；用户确认本地无正式 osx_fairbase、已自行核对 16.29 参照无误。
+
+**下一步**：gate 训练中；训完评 InterHand 全量（中间 epoch 都评取最低）对 **16.29↓**。盯 `loss_hand_aux_coord` 是否钻到 0.44 以下（钻=坐标头真精修；死贴=精修没到输出/`model_core.py:728` 那条线，按诊断表走 → 精修坐标喂 regressor）。
+
 ## 2026-06-30
 
 ### WA2D 触顶 + NaN 高置信根因定位 + 梯度稳定补丁

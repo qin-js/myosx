@@ -24,10 +24,11 @@
 
 > 下面 §当前模型阶段起为 6-27 历史快照（仍有效，作诊断参照）；WA2D 这一周的结论与"推荐下一步"以本节 + `experiment_log.md` 6-28/29/30 为准。
 
-## 2026-07-01 更新：目标下沉「全绿 vs stock OSX」+ 决定上结构性 decoder + H4W++ 竞品
+## 2026-07-01 更新：目标下沉「全绿 vs stock OSX」+ 结构性 decoder（已实现，gate 训练中）+ H4W++ 竞品
 
 - **PoseurDecoder 隔离实验 inconclusive**（冷启随机、欠训，信息量≈0；见 `experiment_log.md` 2026-07-01），但促成方向敲定。
-- **目标定位下沉（用户确认）**：不追顶会，目标 = **相对 stock OSX 全面提升（全绿）+ 一句话方法贡献**。**决定上 §0‴ 的结构性 decoder 大改**（坐标精修 + 每层 aux 监督 + 迭代参考点 + 层数↑）。
+- **目标定位下沉（用户确认）**：不追顶会，目标 = **相对 stock OSX 全面提升（全绿）+ 一句话方法贡献**。
+- **结构性 decoder 大改已实现+提交（commit `0e30614`）、smoke 过、gate 训练中**：`HandDecoder` 改坐标精修器（每层坐标头 + 迭代参考点 + aux 监督 + detach `query_init` 封 DCNv4 NaN，smoke `skipped=0` 实测有效）。本轮只做根因 (1)+(2)，层数/去 topo/量化留作后续 ablation。**gate 配方 = snap2 原样**（lr 5e-5 / batch 64 / end 4 / phase1 2 / posnet_mult 0.5），起点 `osx_l` 冷启 4 epoch = 干净单变量。细节见 `experiment_log.md` 7-01。
 - **生死闸**：新 decoder 的 InterHand PA 必须 < **公平基线 16.29↓**（不只是 stock 19.58）。过闸→方法论文；不过→分析型论文、不得声称方法优越性。
 - **新竞品 Hand4Whole++（CVPR2026，Moon）**：冻结身体 + WiLoR 手专家 + 零卷积 ControlNet（"Conditional Hands Modulator"）；**坐实"融合冻结专家≠decoder"是真正的新意轴**，必须 cite/对标（差异化=单模型、不挂外部专家）。详见 `post_stage3_roadmap.md` §0⁗、记忆 `h4wpp-competitor.md`。
 - **论文表格规划已固化** → `docs/paper_table_plan.md`（五张表 + 生死闸 + 档位预期）。
