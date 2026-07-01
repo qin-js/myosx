@@ -258,8 +258,8 @@ class PoseurDecoder(nn.Module):
             reference_points = tmp.sigmoid()
             
             outputs_coords.append(reference_points)
-            
-        return tgt
+
+        return tgt, outputs_coords
 
 # ==============================================================================
 # 3. ViT Backbone

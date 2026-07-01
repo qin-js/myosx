@@ -155,6 +155,18 @@ class Config:
     # so the forward is unchanged; isolates whether iterative refinement helps.
     # OFF -> HandDecoder, byte-for-byte unchanged. Train and test1 MUST match.
     use_poseur_hand_decoder = False
+    # Coordinate-refiner upgrade for HandDecoder (gate experiment). HandDecoder now
+    # regresses a per-layer 2D reference point and iteratively refines it (was a pure
+    # feature refiner with shared reference points; bbox_embed is zero-init so a
+    # warm-started snapshot is numerically ~unchanged at step 0).
+    # hand_aux_coord_loss_weight scales the per-layer aux coordinate supervision
+    # (0 -> aux loss off; the decoder still iterates but coord heads are trained only
+    # indirectly via pose/FK). detach_hand_decoder_query cuts the decoder->DCNv4
+    # hand_position_net gradient (documented NaN path; cleaner decomposition since the
+    # position_net keeps its own heatmap supervision). Set weight=0 / detach=False to
+    # ablate back toward the old coupling.
+    hand_aux_coord_loss_weight = 1.0
+    detach_hand_decoder_query = True
     # Route C micro-experiment gate (default OFF). When True, hand_roi_net (the
     # feature-level hand crop+upsample, normally part of the frozen backbone) is
     # moved into the trainable set so it can co-adapt with the hand

@@ -722,7 +722,13 @@ class Model(nn.Module):
         # [-2]: scale=2, because the roi size = (hand_hm_shape*scale//2)
         hand_coord_init = self.heatmap2norm(hand_joint_img, cfg.output_hand_hm_shape)
         # print(f"hand_coord_init: {hand_coord_init.shape}, hand_img_feat_joints: {hand_img_feat_joints.shape}, hand_feats[-2]: {hand_feats[-2].shape}")
-        hand_img_feat_joints = self.hand_decoder(hand_feats, coord_init=hand_coord_init[:, :, :2].detach(), query_init=hand_img_feat_joints)
+        # query_init detach (default): cut the decoder->DCNv4 hand_position_net gradient
+        # path (documented NaN source); position_net keeps its own heatmap supervision.
+        _hand_query_init = hand_img_feat_joints
+        if getattr(cfg, 'detach_hand_decoder_query', True):
+            _hand_query_init = _hand_query_init.detach()
+        # HandDecoder/PoseurDecoder now return (refined_features, per_layer_coords).
+        hand_img_feat_joints, hand_aux_coords = self.hand_decoder(hand_feats, coord_init=hand_coord_init[:, :, :2].detach(), query_init=_hand_query_init)
 
         # hand regression head
         hand_pose = self.hand_regressor(hand_img_feat_joints, hand_joint_img.detach())
@@ -963,6 +969,31 @@ class Model(nn.Module):
                 keep = 1.0 - is_bedlam * hand_joint_mask.view(1, -1, 1)
                 joint_trunc_img = joint_trunc_img * keep
                 smplx_joint_trunc_img = smplx_joint_trunc_img * keep
+
+            # Per-layer aux coordinate supervision for the hand decoder (coordinate
+            # refiner). Each decoder layer regresses a 2D reference point in [0,1] hand
+            # space; supervise every layer against the SAME remapped hand GT that
+            # joint_img uses (output_hand_hm_shape space, BEDLAM-masked trunc). With
+            # query_init detached (L725) this trains only the decoder coord heads, not
+            # the DCNv4 head. Convention mirrors hand_joint_img -> joint_img (L731-735):
+            # denorm by output_hand_hm_shape, restore the left-hand flip, then slice the
+            # hand joints out of the reduced joint set ([body, lhand, rhand] layout).
+            aux_w = float(getattr(cfg, 'hand_aux_coord_loss_weight', 0.0))
+            if aux_w > 0 and len(hand_aux_coords) > 0:
+                W_hm, H_hm = cfg.output_hand_hm_shape[2], cfg.output_hand_hm_shape[1]
+                n_body = body_joint_img.shape[1]
+                aux_tgt = smpl_x.reduce_joint_set(targets['joint_img'])[:, :, :2]
+                aux_trunc = smpl_x.reduce_joint_set(joint_trunc_img)
+                aux_terms = []
+                for ref in hand_aux_coords:
+                    ref_hm = ref * ref.new_tensor([W_hm, H_hm])          # [0,1] -> hm-pixel
+                    nb = ref_hm.shape[0] // 2
+                    l = torch.cat((W_hm - 1 - ref_hm[:nb, :, 0:1], ref_hm[:nb, :, 1:2]), 2)  # restore L flip
+                    r = ref_hm[nb:]
+                    aux_joint_img = torch.cat((body_joint_img[:, :, :2], l, r), 1)
+                    per_joint = self.coord_loss(aux_joint_img, aux_tgt, aux_trunc)
+                    aux_terms.append(per_joint[:, n_body:, :])           # hand joints only
+                loss['hand_aux_coord'] = torch.stack(aux_terms).mean() * aux_w
 
             loss['joint_proj'] = self.coord_loss(joint_proj, targets['joint_img'][:, :, :2], meta_info['joint_trunc'])
             joint_img_loss = self.coord_loss(joint_img, smpl_x.reduce_joint_set(targets['joint_img']),

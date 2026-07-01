@@ -611,6 +611,22 @@ class HandDecoder(nn.Module):
             for _ in range(num_decoder_layers)
         ])
 
+        # ---- 每层坐标头 (iterative reference-point refinement, Poseur/Deformable-DETR 式) ----
+        # 镜像 PoseurDecoder.bbox_embed (vit.py): 每层从精修特征回归 2D 坐标偏移,
+        # 在 logit 空间累加到参考点上再 sigmoid。最后一层 Linear 零初始化 →
+        # 第 0 步偏移≈0、首参考点≈coord_init, 贴近暖启的纯特征路径、抑制冷启梯度。
+        self.bbox_embed = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model, d_model), nn.ReLU(inplace=True),
+                nn.Linear(d_model, d_model), nn.ReLU(inplace=True),
+                nn.Linear(d_model, 2),
+            )
+            for _ in range(num_decoder_layers)
+        ])
+        for head in self.bbox_embed:
+            nn.init.zeros_(head[-1].weight)
+            nn.init.zeros_(head[-1].bias)
+
     def _prepare_multi_scale(self, feats):
         """
         将多尺度特征展平为 MSDeformAttn 所需的格式。
@@ -649,7 +665,8 @@ class HandDecoder(nn.Module):
             query_init: (B, J, d_model) 初始 query 特征
 
         Returns:
-            output: (B, J, d_model) 精炼后的 query 特征
+            output:         (B, J, d_model) 精炼后的 query 特征 (喂 regressor, 接口不变)
+            outputs_coords: list[L] of (B, J, 2) ∈ [0,1] 每层精修后的参考点 (供 aux 监督)
         """
         assert len(feats) >= self.n_levels, \
             f"feats has {len(feats)} levels, but decoder needs {self.n_levels}"
@@ -657,19 +674,22 @@ class HandDecoder(nn.Module):
         # 准备多尺度特征
         memory, spatial_shapes, level_start_index = self._prepare_multi_scale(feats)
 
-        # 参考点: (B, J, 2) → (B, J, n_levels, 2)
-        reference_points = coord_init[:, :, None, :].repeat(1, 1, self.n_levels, 1)
-        reference_points = reference_points.clamp(0.0, 1.0)
-
-        # 逐层解码
+        # 迭代参考点: 从 coord_init 起步, 每层回归坐标偏移并在 logit 空间更新 (镜像 PoseurDecoder)
+        ref = coord_init.clamp(0.0, 1.0)            # (B, J, 2) ∈ [0,1]
         output = query_init
-        for layer in self.layers:
+        outputs_coords = []
+        for lid, layer in enumerate(self.layers):
+            ref_points_input = ref[:, :, None, :].repeat(1, 1, self.n_levels, 1).clamp(0.0, 1.0)
             output = layer(
-                output, memory, reference_points,
+                output, memory, ref_points_input,
                 spatial_shapes, level_start_index
             )
+            # 坐标精修: offset 在 logit 空间累加, 再 sigmoid 回 [0,1]
+            tmp = self.bbox_embed[lid](output)
+            ref = (tmp + torch.logit(ref.clamp(1e-4, 1.0 - 1e-4))).sigmoid()
+            outputs_coords.append(ref)
 
-        return output
+        return output, outputs_coords
 
 
 class FaceDecoder(nn.Module):
