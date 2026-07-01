@@ -1,6 +1,6 @@
 # 项目总览
 
-更新时间：2026-06-30
+更新时间：2026-07-01
 
 ## 项目目标
 
@@ -23,6 +23,17 @@
 - **下一步重心**：①**InterHand 公平基线**（同数据微调 OSX）或 headline 让位 held-out HInt；②**UBody 诚实定位**（`[abs]` 已平价、`[wa]` 差 ~0.007，配 InterHand/HInt held-out 赢）；teacher distillation 只能追平 OSX、不能超。WA2D 仅作"缩小 gap 但触顶"的诊断/负结果。
 
 > 下面 §当前模型阶段起为 6-27 历史快照（仍有效，作诊断参照）；WA2D 这一周的结论与"推荐下一步"以本节 + `experiment_log.md` 6-28/29/30 为准。
+
+## 2026-07-01 更新：目标下沉「全绿 vs stock OSX」+ 决定上结构性 decoder + H4W++ 竞品
+
+- **PoseurDecoder 隔离实验 inconclusive**（冷启随机、欠训，信息量≈0；见 `experiment_log.md` 2026-07-01），但促成方向敲定。
+- **目标定位下沉（用户确认）**：不追顶会，目标 = **相对 stock OSX 全面提升（全绿）+ 一句话方法贡献**。**决定上 §0‴ 的结构性 decoder 大改**（坐标精修 + 每层 aux 监督 + 迭代参考点 + 层数↑）。
+- **生死闸**：新 decoder 的 InterHand PA 必须 < **公平基线 16.29↓**（不只是 stock 19.58）。过闸→方法论文；不过→分析型论文、不得声称方法优越性。
+- **新竞品 Hand4Whole++（CVPR2026，Moon）**：冻结身体 + WiLoR 手专家 + 零卷积 ControlNet（"Conditional Hands Modulator"）；**坐实"融合冻结专家≠decoder"是真正的新意轴**，必须 cite/对标（差异化=单模型、不挂外部专家）。详见 `post_stage3_roadmap.md` §0⁗、记忆 `h4wpp-competitor.md`。
+- **论文表格规划已固化** → `docs/paper_table_plan.md`（五张表 + 生死闸 + 档位预期）。
+- 可"免费"加的零件：多参考系关键点 loss（part/inter-hand/IH-vec + 显式 root_pose）、Procrustes graft + 边界平滑。
+
+> 本会话（7-01）的方向以本节 + `post_stage3_roadmap.md` §0⁗ + `docs/paper_table_plan.md` 为准；下面 6-27/6-30 快照仍作诊断参照。
 
 ## 当前模型阶段
 
@@ -127,6 +138,8 @@ Stage 3 snapshot_1 的 per-level `[wa]` NME 为 j1 0.206 / j2 0.225 / j3 0.242 /
 
 ## 推荐下一步
 
+> **（2026-07-01 起主线见上方 7-01 更新）**：结构性 decoder 大改 + `docs/paper_table_plan.md` 对表，盯 InterHand PA 钻到公平基线 **16.29↓** 这道闸。公平基线已跑出 16.29（OSX 略胜），下列 6-30 的 route C / 公平基线 / T1 降为备选/附带线。
+
 地基已修正（编码器与 OSX 逐比特一致），手头无需重训，`snapshot_2 @ 修复编码器`是干净工作基线。下一步：
 
 1. **干净地打 UBody `[wa]` 那 0.010**（现在无 confound，可信测量）：
@@ -145,7 +158,8 @@ Stage 3 snapshot_1 的 per-level `[wa]` NME 为 j1 0.206 / j2 0.225 / j3 0.242 /
 
 ## 文档维护规则
 
-- `docs/post_stage3_roadmap.md`：**Stage 3 之后的前瞻路线/决策**（in-the-wild hand 主线、HInt/UBody 口径修正、COCO pilot 复盘、路线 C 条件）。规划方向时更新这里。
+- `docs/post_stage3_roadmap.md`：**Stage 3 之后的前瞻路线/决策**（in-the-wild hand 主线、HInt/UBody 口径修正、COCO pilot 复盘、路线 C 条件、§0⁗ 7-01 目标下沉 + H4W++ 竞品）。规划方向时更新这里。
+- `docs/paper_table_plan.md`：**论文表格 / 实验规划**（图例 + 五张表 + 生死闸 + 最小可发子集 + 档位预期）。修 decoder、跑评测时照它对表。
 - `docs/continue.txt`：只放重开会话需要的短 handoff。
 - `docs/project_overview.md`：每次战略判断改变时更新。
 - `docs/experiment_log.md`：每次训练/评估完成后追加一条。

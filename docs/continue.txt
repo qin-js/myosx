@@ -5,8 +5,9 @@
 - 6-30：WA2D bootstrap/NaN 高置信根因/梯度稳定补丁见 experiment_log.md 2026-06-30——纠正了 6-29 的"稳定 freeze 路线"说法（freeze 只把 NaN 从 posnet itr820 挪到 decoder itr1295），并补了 frz500 仍输 OSX +0.0068(88% distal) 的配对 bootstrap。
 - 6-30 追加：frz500 guardrail 已回（InterHand PA 17.00 正好踩 kill 线；HInt `[wa]` 0.480、EHF Face 6.15 守住；UBody `[wa]` 0.226 仍输 OSX）。结论：guardrail 基本过但无报告余量，frz500/freeze 只能作 WA2D 触顶诊断，不作为主报告点或稳定 recipe。
 - 6-30 收口：**WA2D direct-loss 线已收口**。weight=0.05 是封口点——比 frz500 更差（`[wa]` Δ+0.0081 vs +0.0068）且仍 NaN@767（NaN 与 weight 无关、根在 DCNv4 反向 kernel）。三堵墙（指标天花板/数值 NaN/InterHand 侵蚀）全数据封死，sweep 无信息增量。**转论文**：① InterHand 公平基线（同数据微调 OSX）守头条；② rotmat pose loss（已实现未试，仅 InterHand 侧 polish）；③ teacher distillation 锁 UBody parity；④ 诚实定位 held-out 赢 + in-domain 追平。
+- **7-01：目标定位下沉为「相对 stock OSX 全绿（非顶会）」+ 决定上结构性 decoder 大改**（坐标精修 + 每层 aux 监督 + 迭代参考点 + 层数↑）。**生死闸 = 新 decoder InterHand PA 必须 < 公平基线 16.29↓**（不只是 stock 19.58）。新竞品 **Hand4Whole++（CVPR2026，Moon，OSX 同源）**坐实"融合冻结专家≠decoder"是新意轴、必须对标（差异化=单模型不挂外部专家）。表格规划见 `docs/paper_table_plan.md`，竞品见记忆 `h4wpp-competitor.md` + `post_stage3_roadmap.md` §0⁗。PoseurDecoder 隔离实验 inconclusive（`experiment_log.md` 7-01）。
 
-更新时间：2026-06-30
+更新时间：2026-07-01
 
 这个文件只保留重开会话时必须先看的信息。完整项目总览见
 `docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，路线判断见
@@ -36,6 +37,8 @@
 
 **WA2D 线已收口（见上 6-30 收口）。主线转 InterHand 公平基线——详细计划见 `docs/post_stage3_roadmap.md` §0″。**
 
+> **（2026-07-01 起主线）目标下沉为「相对 stock OSX 全绿、非顶会可发」→ 决定上结构性 decoder 大改，盯 InterHand PA 钻到公平基线 16.29↓ 这道闸；表格/实验规划见 `docs/paper_table_plan.md`、路线见 `post_stage3_roadmap.md` §0⁗。下面 6-30 的轨 A/轨 B 仍有效：轨 B 公平基线已跑出 16.29（OSX 略胜），轨 A held-out HInt 作底。**
+
 1. **轨 A（零训练）**：headline 让给 held-out HInt（两模型都没训过、我们 0.487→0.480 赢）；InterHand 降级为诚实 in-domain 结果（标注 fine-tune-vs-zero-shot caveat）。立刻化解审稿人质疑。
 2. **轨 B（受控实验，实施中）**：给 `OSX.py` 补冻结脚手架，用**相同冻结 split + 相同数据 + 相同 schedule** 微调 OSX 原生 MMCV 手 decoder，对比我们的 pytorch decoder。判定矩阵见 roadmap §0″：追上=数据带来的、更差=我们 decoder 真更强。决定方法 claim 强度，必做。
 3. **rotmat pose loss**（`use_hand_rotmat_pose_loss`，已实现未试）：便宜低风险的 InterHand 侧 polish（仅 InterHand/BEDLAM 可靠 hand pose GT 处 fire，UBody 伪 GT 吃不到），当 ablation。
@@ -61,6 +64,8 @@ python test.py --gpu 0 --testset UBody --exp_name output/eval_x \
 
 - `docs/project_overview.md`：当前项目状态、关键结果、推荐下一步。
 - `docs/experiment_log.md`：按时间追加；2026-06-27 记录编码器 bug 修复 + 干净基线。
-- `docs/post_stage3_roadmap.md`：路线判断（UBody confound 已被编码器修复解决）。
+- `docs/post_stage3_roadmap.md`：路线判断（UBody confound 已被编码器修复解决；§0⁗ = 7-01 目标下沉 + H4W++ 竞品对标）。
+- `docs/paper_table_plan.md`：论文表格 / 实验规划（图例 + 五张表 + 生死闸 + 最小可发子集 + 档位预期）；修 decoder 时照它对表。
+- 竞品对标：`Hand4Whole++ (CVPR2026, Moon)` 见记忆 `h4wpp-competitor.md` + `post_stage3_roadmap.md` §0⁗；源码在 `E:\论文\Hand4Whole-plus-plus_RELEASE`。
 - `tool/analysis/`：`bootstrap_ci.py` / `crosspath_compare.py` / `encoder_compare.py`（纯 numpy 评测分析工具）。
 - `docs/archive/continue_2026-06-23_full.txt`：旧长版交接记录。

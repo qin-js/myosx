@@ -12,6 +12,13 @@
 
 **下一步**：带 `--skip_nonfinite_grad` 重跑（poseur_iso2）熬过冷启、训到收敛（4 epoch）再对 OSX-ft 16.29 / snap2 16.78。看 `skipped=N`：集中早期后停 = 坐实冷启瞬态、能跑到收敛拿真数；持续到晚 = DCNv4×深 decoder 有更深不稳，再议。公平性 caveat：PoseurDecoder 无法暖启（无兼容预训练权重），只能"从零训到收敛"对暖启基线——追平=架构强，没追平=冷启 handicap 与架构差分不开。备选解法（未采用）：detach `query_init` / LR warmup 压早期梯度。
 
+### 战略结论（本会话）：定位下沉 + H4W++ 竞品 + 决定上结构性 decoder + 表格规划
+
+- **目标定位下沉（用户确认）**：不追顶会，目标 = **相对 stock OSX 全面提升（全绿，无论多小）+ 一句话方法贡献**。结论：**决定上结构性 decoder 大改**（每层出坐标 + 每层 aux 监督 + 迭代参考点 + 层数↑，即 §0‴ 最高杠杆项），它既是方法贡献来源、也是论文活过审稿的闸。
+- **生死闸**：新 decoder 的 InterHand PA 必须钻到**公平基线 16.29↓**（不只是 stock 19.58）。过闸→方法论文成立；不过→退「高效可复现配方 + 冻结骨干分析」分析型论文、不得声称方法优越性。
+- **新竞品 Hand4Whole++（CVPR2026，Moon，OSX 同源）**：冻结 SMPLer-X 身体 + WiLoR 手专家 + DWPose，只训一个零卷积 ControlNet（"Conditional Hands Modulator"），最终手 mesh = WiLoR MANO 经 Procrustes graft 到 SMPL-X 腕。**坐实"提升 whole-body 手部"的新意轴是融合冻结专家、不是 decoder**，必须 cite/对标（差异化=单模型、不挂外部专家/检测器）。详见 `post_stage3_roadmap.md` §0⁗、记忆 `h4wpp-competitor.md`。
+- **表格/实验规划已固化** → `docs/paper_table_plan.md`。
+
 ## 2026-06-30
 
 ### WA2D 触顶 + NaN 高置信根因定位 + 梯度稳定补丁

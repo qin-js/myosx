@@ -1,10 +1,40 @@
 # Stage 3 之后的路线与决策（in-the-wild hand 主线）
 
-更新时间：2026-06-30
+更新时间：2026-07-01
 
 本文件是**前瞻性路线/决策文档**，承接 Stage 3 收口之后的方向选择。
 - 按时间的结果记录见 `docs/experiment_log.md`；当前状态快照见 `docs/project_overview.md`。
 - 本文件回答的是：**手部微调收口后，往哪走、为什么、风险多大、怎么判定生死。**
+
+---
+
+## 0⁗. 2026-07-01 更新（四）：H4W++ 竞品 + 目标下沉「全绿 vs stock OSX」+ 决定上结构性 decoder
+
+### 关键决策（本会话与用户敲定）
+
+- **目标定位下沉**：不追顶会。目标 = **相对 stock OSX 全面提升（全绿，无论多小）+ 一个能写成一句话的方法贡献**。可发性判断 = **够中低档**（workshop 近必中；TCSVT/TMM/PR/CVIU/IVC/Neurocomputing/The Visual Computer 现实可期；3DV/WACV/BMVC 够一够），前提是下面三件事到位。
+- **决定上结构性 decoder 大改**：§0‴ 已定位的"特征精修器→坐标精修器"（每层出坐标 + 每层 aux 监督 + 迭代参考点 + 层数↑）从"最高杠杆候选"升级为**决定要做**。它既是方法贡献来源，也是论文活过审稿的闸。
+- **生死闸（每天盯的唯一数字）**：新 decoder 的 InterHand PA 必须钻到**公平基线 16.29↓**（OSX decoder 同条件微调、且仍在降），**不是只打 stock 19.58**。
+  - 过闸 → 方法论文成立，`paper_table_plan.md` 的 Table 1/3/5 顺手填绿。
+  - 不过闸 → 退「高效可复现配方 + 冻结骨干分析」分析型论文（更低档但仍可发），**不得声称方法优越性**。
+
+### 新竞品：Hand4Whole++（CVPR 2026，Moon，必须对标）
+
+`E:\论文\Hand4Whole-plus-plus_RELEASE` = "Enhancing Hands in 3D Whole-Body Pose Estimation with **Conditional Hands Modulator**"，OSX/Hand4Whole/SMPLer-X 同源作者。
+
+- **架构**：冻结 SMPLer-X 身体 + Hand4Whole 脸 + **WiLoR**（手专家，fp16）+ DWPose（2D→手框）；唯一可训 = 一个**零初始化卷积 ControlNet**（24 层、每 ViT block 一个），把 WiLoR 手特征逐层注入身体 ViT 的 patch token。最终手 mesh = **WiLoR MANO 经 Procrustes 刚性 graft 到 SMPL-X 腕** + 边界平滑。零初始化 ⇒ step 0 逐比特等于冻结 baseline（与我们 freeze flag 同哲学）。
+- **战略含义**：**"提升 whole-body 手部"的新意轴 = 融合冻结专家 / 条件调制，不是 decoder**——headline 手部增益来自专家（WiLoR），学到的只是轻量整合器。**坐实 §0‴ 的 decoder 根因结论**；"我们 decoder 打败 OSX decoder"这条卖点双重失效。
+- **我们的差异化（写进 related work）**：单模型、**不挂外部专家/检测器**（无 WiLoR/YOLO/DWPose）、冻结骨干诚实分析。不对标 → 好一点的地方 desk-reject。
+- 详见记忆 `h4wpp-competitor.md`。
+
+### 可借鉴的"免费"零件（headline-agnostic，无论闸过不过都该加）
+
+- **多参考系关键点 loss**（直击 §0‴ 根因 #1 的贫乏监督）：part-relative（腕/颈相对）+ inter-hand-relative + inter-hand 成对向量 + **显式监督 MANO root_pose**。
+- **Procrustes graft + 边界平滑**：让"更好的手"真正进入最终 mesh 指标。⚠️ graft 只在"贴进去的手 > 基线手"时才涨点——graft 我们自己（弱于公平基线的）手不制造胜利，只是干净缝进去。
+
+### 论文表格 / 实验规划
+
+→ **`docs/paper_table_plan.md`**：图例（🟢必赢 stock / 🔑必赢公平基线 / ⚪同台 / 🔍分析 / ⚠️风险）+ 五张表（全身 / 手专项含生死闸 / held-out 泛化 / 消融 / 效率）+ 最小可发子集 + 档位预期。修 decoder 时照它对表。
 
 ---
 
