@@ -2,6 +2,49 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-07-02
+
+### body-shape T1 评测收口：UBody `[wa]` 真提升但伴随 `[abs]`/MPVPE 退化
+
+评测目录：T1 `output/eval_body_shape_t1/`，OSX baseline `output/eval_OSX/`；T1 是从 `joint_polish_f/snapshot_2` warm-start 后只训 `body_regressor.shape_out+cam_out`，所以相对 OSX 的数字是最终模型对比，因果归因需同时看相对 snap2 起点。
+
+**AGORA（snapshot0/1 都已评）**：变化很小，epoch1 基本平台。
+
+| 指标 | OSX | T1 s0 | T1 s1 | s1-s0 |
+|---|---:|---:|---:|---:|
+| PA MPVPE All | 70.47 | 70.11 | 70.07 | -0.04 |
+| PA MPVPE Hands | 11.65 | 11.13 | 11.14 | +0.01 |
+| PA MPVPE Face | 4.78 | 4.73 | 4.72 | -0.01 |
+| MPVPE All | 169.83 | 169.67 | 169.69 | +0.02 |
+| MPVPE Hands | 73.13 | 73.88 | 73.88 | -0.01 |
+| MPVPE Face | 78.04 | 77.74 | 77.74 | +0.00 |
+
+判读：PA 口径有 <0.6mm 的小幅改善，非 PA hand 反而差约 +0.75mm；实用意义弱，不能作为主贡献。
+
+**UBody（snapshot1 补评后趋势明确）**：
+
+| 指标 | OSX | snap2 起点 | T1 s0 | T1 s1 | s1-s0 |
+|---|---:|---:|---:|---:|---:|
+| PA MPVPE All | 41.00 | 41.10 | 41.05 | 41.10 | +0.05 |
+| PA MPVPE Hands | 10.29 | 10.11 | 10.22 | 10.23 | +0.01 |
+| MPVPE All | 98.92 | 99.61 | 100.09 | 100.34 | +0.25 |
+| MPVPE Hands | 38.24 | 39.23 | 38.85 | 38.85 | -0.00 |
+| PA MPJPE Body | 50.51 | 50.79 | 50.24 | 50.24 | -0.00 |
+| `[abs]` NME | 0.311 | 0.324 | 0.365 | 0.367 | +0.002 |
+| `[abs]` PCK@0.2 | 0.422 | 0.406 | 0.300 | 0.298 | -0.002 |
+| `[wa]` NME | 0.219 | 0.229 | 0.204 | 0.204 | +0.000 |
+| `[wa]` PCK@0.2 | 0.587 | 0.560 | 0.622 | 0.621 | -0.001 |
+
+paired bootstrap（T1 s1 - s0）：`[wa]` NME +0.00009、PCK@0.2 -0.00052，等于没有新收益；`[abs]` NME +0.00219、MPVPE All +0.246mm，说明第二个 epoch 只让全局/abs 相关指标轻微变差。group attribution 同结论：s1 vs s0 overall `[wa]` delta 仅 +0.0001，按 size/side/finger/level 全部平台。
+
+相对 OSX 的 UBody `[wa]` 改善是真的但结构性分裂：overall `[wa]` 0.2182 -> 0.2038（约 -6.6%），small hands 0.2851 -> 0.2540（约 -10.9%）最明显；但 `[abs]` 同时大幅退化，尤其小手 abs 0.378 -> 0.469。相对 snap2 起点，T1 把 `[wa]` 0.229 -> 0.204，但也把 `[abs]` 0.324 -> 0.367。
+
+**crosspath 解释**：T1 几乎不改 `smplx_root_pose/body_pose`，主要改 `smplx_shape` 与 `cam_trans.z`。UBody `cam_z` 均值从 OSX 22.85 -> s0 25.43 -> s1 25.41；AGORA 从 41.28 -> 43.91 -> 44.00。第二个 epoch 只继续小幅推 shape/cam（UBody s1-s0 shape mean_abs 0.0147、cam mean_abs 0.0310），不足以带来新收益。
+
+**结论**：T1 的 UBody `[wa]` 提升不是噪声，但不能写成"手部质量提升"。WA 先把预测手平移到 GT wrist，只看手内相对形状/投影尺度；shape/cam 改动可能让 wrist-relative 2D 更接近真实手，同时让 wrist/global placement 更差，所以 `[abs]` 和非 PA 3D 退化。**同配方不再继续训练，最佳也只能取 snapshot0 作诊断/附带结果**。
+
+**下一步（若继续挖 T1）**：必须拆 `shape_out only` vs `cam_out only` ablation；优先怀疑 `cam_out` 解释大部分小手 WA 改善和 `[abs]` 退化。若想保留 WA gain，需要约束 `cam_trans.z` 或只训 shape，并把 UBody `[abs]`/MPVPE 作为 guardrail。
+
 ## 2026-07-01
 
 ### PoseurDecoder 隔离实验（itr1500，inconclusive）+ DCNv4 NaN 因果模型【修正】
