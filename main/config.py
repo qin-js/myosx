@@ -167,6 +167,15 @@ class Config:
     # ablate back toward the old coupling.
     hand_aux_coord_loss_weight = 1.0
     detach_hand_decoder_query = True
+    # Feed the decoder's last-layer REFINED coordinate (xy) to hand_regressor
+    # instead of the raw soft-argmax hand_joint_img (z stays soft-argmax — the
+    # decoder only regresses 2D). Without this the coord-refiner's learned
+    # refinement never reaches the pose output (gate epoch0-1: aux dropped to
+    # ~0.36 < the 0.44 soft-argmax baseline but InterHand PA stayed ~16.80).
+    # Detached at the call site so the regressor doesn't train the coord head
+    # via this path (coord head trains via hand_aux_coord). False = old
+    # pure-soft-argmax behavior, byte-identical, for ablation.
+    use_refined_hand_coord = True
     # Route C micro-experiment gate (default OFF). When True, hand_roi_net (the
     # feature-level hand crop+upsample, normally part of the frozen backbone) is
     # moved into the trainable set so it can co-adapt with the hand

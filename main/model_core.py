@@ -731,7 +731,19 @@ class Model(nn.Module):
         hand_img_feat_joints, hand_aux_coords = self.hand_decoder(hand_feats, coord_init=hand_coord_init[:, :, :2].detach(), query_init=_hand_query_init)
 
         # hand regression head
-        hand_pose = self.hand_regressor(hand_img_feat_joints, hand_joint_img.detach())
+        # Coord fed to the regressor: default = decoder's last-layer REFINED xy
+        # (denormed back to hm-pixel, same left-flipped stacked convention as
+        # hand_joint_img) + the original soft-argmax z (decoder only regresses 2D).
+        # Detached so the regressor does not train the coord head via this path —
+        # the coord head trains via loss['hand_aux_coord']. Flag off = old
+        # pure-soft-argmax behavior (ablation).
+        if getattr(cfg, 'use_refined_hand_coord', True) and len(hand_aux_coords) > 0:
+            _ref = hand_aux_coords[-1]  # (2N, J, 2) in [0,1], left-flipped-stacked
+            _ref_xy = _ref * _ref.new_tensor([cfg.output_hand_hm_shape[2], cfg.output_hand_hm_shape[1]])
+            _regressor_coord = torch.cat((_ref_xy, hand_joint_img[:, :, 2:3]), 2).detach()
+        else:
+            _regressor_coord = hand_joint_img.detach()
+        hand_pose = self.hand_regressor(hand_img_feat_joints, _regressor_coord)
         hand_pose = rot6d_to_axis_angle(hand_pose.reshape(-1, 6)).reshape(hand_img_feat_joints.shape[0], -1)  # (2N, J_R*3)
         # restore flipped left hand joint coordinates
         batch_size = hand_joint_img.shape[0] // 2
@@ -748,7 +760,11 @@ class Model(nn.Module):
         # face keypoint-guided deformable decoder
         _, face_joint_img, face_img_feat_joints = self.face_position_net(face_feats[-2])  # (N, J_P, 3) in (face_hm_shape[2], face_hm_shape[1], face_hm_shape[0]) space
         face_coord_init = self.heatmap2norm(face_joint_img, cfg.output_face_hm_shape)
-        face_img_feat_joints = self.face_decoder(face_feats, coord_init=face_coord_init[:, :, :2].detach(), query_init=face_img_feat_joints)
+        # FaceDecoder returns features only; PoseurDecoder (mode=='test') returns
+        # (features, per_layer_coords) since the coord-refiner contract change —
+        # discard the coords (no face aux supervision yet).
+        _face_out = self.face_decoder(face_feats, coord_init=face_coord_init[:, :, :2].detach(), query_init=face_img_feat_joints)
+        face_img_feat_joints = _face_out[0] if isinstance(_face_out, tuple) else _face_out
         # face regression head
         expr, jaw_pose = self.face_regressor(face_img_feat_joints, face_joint_img.detach(), face_feats[-1])
         jaw_pose = rot6d_to_axis_angle(jaw_pose)
