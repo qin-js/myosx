@@ -12,6 +12,7 @@
 - HInt：提供 held-out hand-interaction 2D 手关键点评测；当前 loader 是 hand-crop/local-hand 口径。
 
 当前战略（2026-06-27 修订）：**脸不是贡献点；编码器移植 bug 已修复（pytorch 路径现与 OSX 逐比特一致）；手头对修复鲁棒、无需重训。修复后 UBody `[abs]` 与 EHF Face 免费追平 OSX，InterHand/HInt 仍赢；唯一干净未过的是 UBody natural-hand `[wa]` 落后 OSX 0.010（已隔离为纯手头自然图手指 articulation）。**
+> ⚠️ 7-02 归因修正：末句"纯手头 articulation"已被 T1 推翻——手分支零改动、只训 body 侧 `shape_out+cam_out` 就把 `[wa]` 0.229→0.204（反超 OSX 0.219），gap 大块在 body 侧几何/投影；指尖残差仍归 articulation/decoder。详见下方 7-02 节 + `experiment_log.md` 2026-07-02。
 
 ## 2026-06-30 更新：UBody `[wa]` polish 线触顶，重心转回论文
 
@@ -35,6 +36,14 @@
 - 可"免费"加的零件：多参考系关键点 loss（part/inter-hand/IH-vec + 显式 root_pose）、Procrustes graft + 边界平滑。
 
 > 本会话（7-01）的方向以本节 + `post_stage3_roadmap.md` §0⁗ + `docs/paper_table_plan.md` 为准；下面 6-27/6-30 快照仍作诊断参照。
+
+## 2026-07-02 更新：T1 收口（归因修正）+ gate epoch0/1（L728 排队）
+
+- **T1（只训 `shape_out+cam_out`，BEDLAM-only）收口**：UBody `[wa]` **0.204 反超 OSX 0.219** ✅、wrist-rel 84.13→**83.36**（betas 骨长）✅、AGORA PA 小赢 ✅、InterHand PA **16.78 逐字不变**（预注册预测命中 → 手分支零漂移、归因干净）；代价 = UBody `[abs]` 0.324→**0.367 崩**（crosspath：`cam_z` 22.85→25.43，BEDLAM 域偏移）❌、EHF Face 6.15→6.39 破 guardrail ❌。**原样不可上表；s0≈s1 平台，同配方不再训**。
+- **归因修正（大事）**：UBody `[wa]` gap ≠ "100% 手头 articulation"（6-27 结论作废）——body 侧 shape/cam 覆盖整个 gap 并反超；WA2D 线的"distal 天花板"大块其实是 body 侧（腕对齐消平移不消尺度→同样 distal 递增签名）。指尖残差（tip 0.256 vs 0.263）仍归 decoder。**两条正交杠杆成形：decoder 线打 InterHand 闸、T1 线打 UBody `[wa]` 格。**
+- **T1 下一步**：拆 `shape_out only` vs `cam_out only` 消融（首要怀疑 cam_z 既是小手 `[wa]` 收益又是 `[abs]` 崩因）；guardrail = UBody `[abs]`/MPVPE + EHF Face + InterHand 不动。现在 `--trainset_3d` CLI 可用，不用改 config。
+- **coordrefiner gate epoch0/1**：17.06→16.84→**16.80**（≈snap2，减速，外推平台 ~16.6-16.7，闸 16.29 未过）；aux 0.36 < 基线 0.44（精修坐标真比 soft-argmax 好）但 PA 没吃到 → 判据触发：**精修没到输出，L728（精修坐标喂 regressor）排队**，从 gate snapshot_1 暖启。`skipped=0` 零 NaN。
+- 基建：`--testset AGORA`（validation GT 工具）+ `--trainset_3d/--trainset_3d_sample_prob` CLI 覆盖已进 main。
 
 ## 当前模型阶段
 
@@ -139,7 +148,7 @@ Stage 3 snapshot_1 的 per-level `[wa]` NME 为 j1 0.206 / j2 0.225 / j3 0.242 /
 
 ## 推荐下一步
 
-> **（2026-07-01 起主线见上方 7-01 更新）**：结构性 decoder 大改 + `docs/paper_table_plan.md` 对表，盯 InterHand PA 钻到公平基线 **16.29↓** 这道闸。公平基线已跑出 16.29（OSX 略胜），下列 6-30 的 route C / 公平基线 / T1 降为备选/附带线。
+> **（2026-07-02 起主线见上方 7-02 更新）**：两条正交杠杆——decoder 线（L728 修复→重训，盯 InterHand PA 过 16.29 闸）+ T1 线（shape/cam 拆分消融，锁 UBody `[wa]` 0.204 的赢、退掉 `[abs]` 崩）。下列 6-30 的 route C / 公平基线细节仍作背景。
 
 地基已修正（编码器与 OSX 逐比特一致），手头无需重训，`snapshot_2 @ 修复编码器`是干净工作基线。下一步：
 

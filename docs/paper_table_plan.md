@@ -35,6 +35,7 @@ testset = **EHF + UBody**；列 = MPVPE / PA-MPVPE 的 (all / hands / face)
 
 - **body 部分是隐藏王牌**：冻结骨干 ⇒ 身体逐比特≈OSX ⇒ 写"几乎相同"，当"可证明不破坏身体"的卖点，不是输赢。
 - **EHF hands = ⚠️**：EHF 不在训练域，手能否泛化是全绿最大风险。盯它；真退化就补 EHF-like 手数据，或至少做到不退（平手算绿）。
+- **7-02 更新**：UBody hands `[wa]` 格有了 body 侧杠杆——T1 已做到 **0.204 反超 OSX 0.219**，但原样伴随 `[abs]` 0.367 崩 + EHF Face 6.39，**须等 shape/cam 拆分消融拿到"只赢不崩"版本才能上表**；`[abs]` 与 EHF Face 因此升级为**受监护格**（任何 T1 变体上表前必须核）。AGORA 现可测（`--testset AGORA`），可作 Table 1 附加列（T1 在 AGORA PA 全线小赢）。
 
 ## Table 2 — 手部专项表（核心战场 / 生死闸）
 testset = **InterHand26M (+ HIC 若有)**；列 = MPJPE / MPVPE / MRRPE（per-hand root+scale 对齐，IntagHand 协议）

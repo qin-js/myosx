@@ -96,7 +96,7 @@ This logic is duplicated across `Trainer._load_pretrained_frozen` / `_load_resum
 
 - The `Config` singleton `cfg` is mutated globally. **`cfg.set_args(...)` must be called before `cfg.set_additional_args(...)`**; the latter calls `prepare_dirs`, which creates `output/<exp_name>/{model_dump,vis,log,code,result}` and **copies key source files into `code/` as a per-run backup**.
 - `encoder_setting` (`osx_b`/`osx_l`) sets `feat_dim` (768/1024) and the encoder config/pretrained paths.
-- **Training datasets are set in `config.py`, not via CLI** (`trainset_3d` / `trainset_2d` near line 27 — currently `['InterHand26M', 'UBody', 'MSCOCO']`). The benchmark flags override these. The test set comes from `--testset` (`EHF` / `UBody` / `InterHand26M` / `HInt` / `HAA500`).
+- **Training datasets default from `config.py`** (`trainset_3d` / `trainset_2d` near line 27 — currently `['InterHand26M', 'UBody', 'MSCOCO']`), overridable per-run via `--trainset_3d` / `--trainset_3d_sample_prob` (space/comma separated; probs as `name=value`). The benchmark flags override these. The test set comes from `--testset` (`EHF` / `UBody` / `InterHand26M` / `HInt` / `HAA500` / `AGORA` — AGORA validation GT via `tool/AGORA/extract_validation_smplx_gt.py`, resolution in `cfg.agora_resolution`).
 - `cfg.visualization` toggles saving ViT intermediate-layer feature maps / attention during test inference (handled by `common/utils/visualize.py`, output to `vit_vis/`); off by default.
 
 ## Datasets

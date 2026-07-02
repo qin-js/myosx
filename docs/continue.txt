@@ -7,7 +7,9 @@
 - 6-30 收口：**WA2D direct-loss 线已收口**。weight=0.05 是封口点——比 frz500 更差（`[wa]` Δ+0.0081 vs +0.0068）且仍 NaN@767（NaN 与 weight 无关、根在 DCNv4 反向 kernel）。三堵墙（指标天花板/数值 NaN/InterHand 侵蚀）全数据封死，sweep 无信息增量。**转论文**：① InterHand 公平基线（同数据微调 OSX）守头条；② rotmat pose loss（已实现未试，仅 InterHand 侧 polish）；③ teacher distillation 锁 UBody parity；④ 诚实定位 held-out 赢 + in-domain 追平。
 - **7-01：结构性 decoder 大改已实现+提交（commit `0e30614`）、smoke 过、gate 训练中。** HandDecoder 改坐标精修器（每层坐标头+迭代参考点+aux 监督+detach `query_init` 封 DCNv4 NaN，smoke `skipped=0` 实测有效）。**生死闸 = 新 decoder InterHand PA 必须 < 公平基线 16.29↓**（不只 stock 19.58）。**gate 配方 = snap2 同配方**（lr 5e-5 / batch 64 / end_epoch 4 / phase1_epochs 2 / posnet_lr_mult 0.5）；起点纪律 = `osx_l` 冷启 4 epoch 才是干净 gate（详见 `experiment_log.md` 7-01）。新竞品 **Hand4Whole++（CVPR2026，Moon）**坐实"融合冻结专家≠decoder"、必须对标。表格 `docs/paper_table_plan.md`、竞品记忆 `h4wpp-competitor.md`、路线 `post_stage3_roadmap.md` §0⁗。
 
-更新时间：2026-07-01
+- **7-02：T1 收口（归因修正）+ gate epoch0/1 + L728 排队。** T1（只训 shape_out+cam_out）：UBody `[wa]` **0.204 反超 OSX 0.219** ✅ / wrist-rel 83.36 ✅ / InterHand 16.78 逐字不变（归因干净）✅，但 `[abs]` 0.367 崩 + EHF Face 6.39 ❌（crosspath：cam_z 域偏移）→ **原样不可上表，下一步 shape/cam 拆分消融**。**6-27"[wa] gap=100% 手头"作废**——body 侧 shape/cam 覆盖整个 gap；两条正交杠杆 = decoder 打 InterHand 闸 + T1 打 UBody `[wa]` 格。gate：17.06→16.84→16.80（≈snap2 未钻），aux 0.36<0.44 但 PA 没吃到 → **L728（精修坐标喂 regressor）为 decoder 线下一步**，从 gate snapshot_1 暖启。基建：`--testset AGORA` + `--trainset_3d` CLI 已进 main。详见 experiment_log.md 2026-07-02。
+
+更新时间：2026-07-02
 
 这个文件只保留重开会话时必须先看的信息。完整项目总览见
 `docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，路线判断见

@@ -24,6 +24,12 @@
 - **起点 = `osx_l` 冷启、4 epoch**：snap2 与公平基线都这么做 → 新 decoder 也同起点同预算才是干净单变量；暖启 snap2 会给 head start + 8-epoch 预算失衡，那是"在 snap2 上再加精修头"的另一实验、非本闸。
 - **配方一致性 caveat**：本地 `osx_fairbase_smoke` 用 lr 1e-5（仅 snap2/poseur_iso 是 5e-5）；须确认产出 16.29 的 OSX-ft 与 snap2 同配方，否则基线自身就不公平。用户确认本地无正式 osx_fairbase、已自行核对参照无误。
 
+### 7-02 addendum：gate epoch0/1 + T1 收口 → 两条正交杠杆
+
+- **gate**：17.06→16.84→**16.80**（2 ep，≈snap2、未钻、减速）；aux 0.36<0.44 但 PA 没吃到 → **"精修没到输出"判据触发，L728（末层精修坐标喂 regressor）为 decoder 线下一步**，从 gate snapshot_1 暖启。起点纪律修正：撤回"osx_l 冷启才干净"——osx_l 对 OSX 暖、对我们冷（~25），**各用自家最佳 init（OSX←osx_l、我们←snap2）才公平**；预训练本钱差异作论文 caveat。
+- **T1**：UBody `[wa]` **0.204 反超 OSX**、wrist-rel −0.77、InterHand 逐字不变（归因干净）；代价 `[abs]` 0.367 崩 + EHF Face 6.39（crosspath 指向 `cam_z` 域偏移）。**6-27"[wa] gap=100% 手头"作废**；"distal 天花板"大块是 body 侧。下一步 = shape/cam 拆分消融（guardrail：UBody `[abs]`/EHF Face/InterHand）。
+- **战略格局**：decoder 线打 InterHand 闸（方法贡献）、T1 线打 UBody `[wa]` 格（全绿表最难的格子）+ 诚实分析素材（"被误读为手部 articulation 的 body 侧几何"）。两线正交可叠加。
+
 ### 新竞品：Hand4Whole++（CVPR 2026，Moon，必须对标）
 
 `E:\论文\Hand4Whole-plus-plus_RELEASE` = "Enhancing Hands in 3D Whole-Body Pose Estimation with **Conditional Hands Modulator**"，OSX/Hand4Whole/SMPLer-X 同源作者。
@@ -132,7 +138,7 @@ OSX 训练集（MSCOCO/H36M/MPII/UBody/AGORA）**不含 InterHand26M**，所以�
 **本文件 §0–§3 围绕"UBody natural-hand 仍输 OSX、可能有 confound"展开。该 confound 现已坐实并解决：**
 
 - 根因是 `StandardViT` PatchEmbed padding 错（0 vs OSX 2），冻结 body/cam 一直漂（cross-path 腕 1.4°）。修复后 pytorch 编码器与 OSX **逐比特一致**，cross-path 腕漂移归零。详见 `experiment_log.md` 2026-06-27。
-- 修复后的干净结论：**手头无需重训**；UBody `[abs]` 与 EHF Face **免费追平 OSX**；UBody `[wa]` 那 0.010 **仍在、且现在 100% 是手头**（不再有 body confound）。
+- 修复后的干净结论：**手头无需重训**；UBody `[abs]` 与 EHF Face **免费追平 OSX**；UBody `[wa]` 那 0.010 **仍在、且现在 100% 是手头**（不再有 body confound）。（⚠️ 7-02 再修正：T1 证明该 gap 可被 body 侧 shape/cam 覆盖并反超——"100% 手头"只对"body **pose/特征**无 confound"成立，body **shape/cam** 仍是主因之一；见 §0⁗ 7-02 addendum。）
 - **所以 §0 那张"现状表"里的 `[abs]` 退化、wrist-rel 部分归因要更新**：`[abs]` 已基本追平；`[wa]` 0.010 是唯一干净未过项。下面 §1–§7 的路线逻辑（路线 C 优先、wrist-rel 需架构改动、兜底判据）**基本仍成立**，只是现在都在无 confound 的干净地基上测量。
 
 ---

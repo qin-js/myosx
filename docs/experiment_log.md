@@ -45,6 +45,22 @@ paired bootstrap（T1 s1 - s0）：`[wa]` NME +0.00009、PCK@0.2 -0.00052，等�
 
 **下一步（若继续挖 T1）**：必须拆 `shape_out only` vs `cam_out only` ablation；优先怀疑 `cam_out` 解释大部分小手 WA 改善和 `[abs]` 退化。若想保留 WA gain，需要约束 `cam_trans.z` 或只训 shape，并把 UBody `[abs]`/MPVPE 作为 guardrail。
 
+**7-02 补充：InterHand 收口 + 归因钉死（预注册预测命中）**。T1 InterHand 全量：PA **16.78**（snap2 逐字相同）/ wrist-rel **83.36**（snap2 84.13 → −0.77，vs OSX 86.32 领先 ~3mm）。预注册判据"PA 是相似对齐、cam 碰不到，动 >0.3 = 手部模块漂"→ 实际 0.00：**手/脸分支确认零漂移、无 BEDLAM 毒，T1 全部 delta 干净归因 betas+cam**。wrist-rel 的 −0.77 是纯 betas 骨长收益（cam_trans 不影响 3D）——"卡死 84"的 wrist-rel 第一次被便宜推动。**归因修正（改写 6-27 结论）**：UBody `[wa]` 那 0.010 不是"100% 手头 articulation"——手分支零改动下 body 侧 shape/cam 就能覆盖整个 gap 并反超（0.204<0.219），WA2D 线撞的"distal 天花板"有相当一块是 body 侧几何/投影（腕对齐消平移不消尺度，误差 ∝ 离腕距离 → 同样呈 distal 递增签名）。指尖残差（tip 0.256 vs OSX 0.263，改善最小）仍是 articulation，归 decoder 线。
+
+### coordrefiner gate epoch0/1：恢复到 snap2 持平，"精修没到输出"判据触发 → L728 排队
+
+`output/coordrefiner_gate`（暖启 snap2；实跑配方 **end_epoch 8 / phase1 4 / posnet_lr_mult 0.25**，偏离锁定的 4/2/0.5——cosine 展开与 phase 边界不同，等预算口径要注明）：
+
+| ckpt | 训练量 | InterHand PA | wrist-rel |
+|---|---|---:|---:|
+| snapshot_0 | 1 ep | 17.06 | 84.02 |
+| snapshot_1_itr3000 | ~1.6 ep | 16.84 | 84.00 |
+| snapshot_1 | 2 ep | **16.80** | 83.93 |
+
+判读：epoch0 = 暖启扰动（bbox_embed 零初始化+新机制打架），epoch1-2 恢复到 **≈snap2(16.78)，未钻下去**；减速明显（−0.26→−0.04），外推平台 ~16.6-16.7，距闸 16.29 差 0.5。**决定性信号**：`loss_hand_aux_coord` 0.55→**~0.36**（< 零初始化时的 soft-argmax 基线 0.44，即精修坐标在 2D 上比 soft-argmax 好 ~15-20%）但 PA 没吃到 → 命中预注册判据"**aux 在学、PA 不动 = 精修坐标没进 regressor**"（`model_core.py:728` 仍喂 soft-argmax 坐标，精修只改善 decoder 内部采样位置，杠杆弱）。稳定性 ✅：两个 epoch `skipped=0`、零 NaN（detach 方案正式规模坐实）。@1ep 同预算对比扎心：我们 17.06 vs OSX-ft 16.29。**下一步 = L728 修复**（decoder 末层精修坐标反归一化 xy + soft-argmax z、保持 detach 惯例，替换喂 regressor 的 `hand_joint_img`）→ 从本 run snapshot_1 暖启（bbox_embed 已练出 0.36）再训。当前 run 数据留作"迭代采样+aux 单独价值"消融行（Table 4）。
+
+**起点公平性修正（用户洞察）**：撤回"干净 gate = osx_l 冷启"的说法——osx_l 给 OSX decoder 暖启（19.58）、给我们冷启（~25），本就不对称；**各架构用自己最好的预训练 init**（OSX←osx_l、我们←snap2）才是公平类比，`init_trained_path` 应保留。论文 caveat：两边预训练本钱来源不同（OSX 原始大数据 vs 我们同微调集），写成"各自最佳 init、同数据微调"。
+
 ## 2026-07-01
 
 ### PoseurDecoder 隔离实验（itr1500，inconclusive）+ DCNv4 NaN 因果模型【修正】
