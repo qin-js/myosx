@@ -11,10 +11,15 @@ import copy
 # ================================================================
 try:
     from DCNv4 import FlashDeformAttn as MSDeformAttn
+    _USING_FLASH_DEFORM_ATTN = True
     print("[Decoder] Using FlashDeformAttn (faster)")
 except ImportError:
     from ops.modules import MSDeformAttn
+    _USING_FLASH_DEFORM_ATTN = False
     print("[Decoder] Using MSDeformAttn (default)")
+
+
+_FLASH_DEFORM_ATTN_IM2COL_STEP = 64
 
 
 # ================================================================
@@ -89,6 +94,32 @@ def build_hand_adjacency(num_joints):
             adj[j][i] = 1.0
     adj.fill_diagonal_(1.0)  # 自连接
     return adj
+
+
+def _flash_deform_attn_pad_size(batch_size):
+    if not _USING_FLASH_DEFORM_ATTN:
+        return 0
+    if batch_size <= _FLASH_DEFORM_ATTN_IM2COL_STEP:
+        return 0
+    return (-batch_size) % _FLASH_DEFORM_ATTN_IM2COL_STEP
+
+
+def _pad_batch_dim(x, pad_size):
+    if pad_size == 0:
+        return x
+    return torch.cat((x, x.new_zeros((pad_size, *x.shape[1:]))), dim=0)
+
+
+def _pad_decoder_inputs_for_flash(feats, coord_init, query_init):
+    """DCNv4 FlashDeformAttn requires B>64 to be divisible by im2col_step."""
+    batch_size = query_init.shape[0]
+    pad_size = _flash_deform_attn_pad_size(batch_size)
+    if pad_size == 0:
+        return feats, coord_init, query_init, batch_size
+    feats = [_pad_batch_dim(feat, pad_size) for feat in feats]
+    coord_init = _pad_batch_dim(coord_init, pad_size)
+    query_init = _pad_batch_dim(query_init, pad_size)
+    return feats, coord_init, query_init, batch_size
 
 
 def compute_graph_distance(adj):
@@ -670,6 +701,9 @@ class HandDecoder(nn.Module):
         """
         assert len(feats) >= self.n_levels, \
             f"feats has {len(feats)} levels, but decoder needs {self.n_levels}"
+        feats, coord_init, query_init, orig_batch_size = _pad_decoder_inputs_for_flash(
+            feats, coord_init, query_init
+        )
 
         # 准备多尺度特征
         memory, spatial_shapes, level_start_index = self._prepare_multi_scale(feats)
@@ -688,6 +722,10 @@ class HandDecoder(nn.Module):
             tmp = self.bbox_embed[lid](output)
             ref = (tmp + torch.logit(ref.clamp(1e-4, 1.0 - 1e-4))).sigmoid()
             outputs_coords.append(ref)
+
+        if output.shape[0] != orig_batch_size:
+            output = output[:orig_batch_size]
+            outputs_coords = [coord[:orig_batch_size] for coord in outputs_coords]
 
         return output, outputs_coords
 
@@ -776,6 +814,9 @@ class FaceDecoder(nn.Module):
         接口与 HandDecoder 完全相同。
         """
         assert len(feats) >= self.n_levels
+        feats, coord_init, query_init, orig_batch_size = _pad_decoder_inputs_for_flash(
+            feats, coord_init, query_init
+        )
 
         memory, spatial_shapes, level_start_index = self._prepare_multi_scale(feats)
 
@@ -788,5 +829,8 @@ class FaceDecoder(nn.Module):
                 output, memory, reference_points,
                 spatial_shapes, level_start_index
             )
+
+        if output.shape[0] != orig_batch_size:
+            output = output[:orig_batch_size]
 
         return output
