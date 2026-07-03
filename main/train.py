@@ -399,6 +399,12 @@ def parse_args():
                              'axis-angle L1 更稳）；默认关闭，不影响现有训练')
     parser.add_argument('--hand_rotmat_pose_loss_weight', type=float, default=None,
                         help='rotation-matrix hand pose loss 权重（默认沿用 cfg 的 1.0）')
+    parser.add_argument('--hand_aux_coord_loss_weight', type=float, default=None,
+                        help='decoder 每层 aux 2D 坐标监督权重（默认沿用 cfg 的 1.0）；设 0 关闭 aux，'
+                             '测试 2D 坐标监督是否与 3D hand pose 抢梯度/容量（见 experiment_log 7-03）')
+    parser.add_argument('--no_refined_hand_coord', action='store_true',
+                        help='关闭 L728：不把 decoder 末层精修坐标喂 hand_regressor，回退到 soft-argmax '
+                             'hand_joint_img（默认 cfg.use_refined_hand_coord=True）；7-03 L728 判负后的复位开关')
     parser.add_argument('--disable_weighted_dataset_sampling', action='store_true')
     args = parser.parse_args()
     return args
@@ -638,6 +644,10 @@ def main():
         cfg.use_hand_rotmat_pose_loss = True
     if args.hand_rotmat_pose_loss_weight is not None:
         cfg.hand_rotmat_pose_loss_weight = args.hand_rotmat_pose_loss_weight
+    if args.hand_aux_coord_loss_weight is not None:
+        cfg.hand_aux_coord_loss_weight = args.hand_aux_coord_loss_weight
+    if args.no_refined_hand_coord:
+        cfg.use_refined_hand_coord = False
     if args.init_trained_path:
         cfg.init_trained_path = args.init_trained_path
 

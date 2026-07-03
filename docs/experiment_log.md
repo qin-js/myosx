@@ -2,6 +2,26 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-07-03
+
+### L728（精修坐标喂 regressor）= 负结果，证伪"精修没到 regressor"判据 → decoder 坐标线判定不打闸
+
+`output/coordrefiner_l728_fair4`：暖启自 `coordrefiner_gate/snapshot_1`(gate 2ep, PA **16.80**)，应用 L728 后**只训 1 epoch**（epoch 2, itr 4733，日志止于 snapshot_2 保存）。L728 = `model_core.py:740-746`：把 decoder 末层**精修 xy**（反归一化回 hm-pixel）+ 原 soft-argmax **z** 拼接、detach 后喂 `hand_regressor`（`use_refined_hand_coord` 默认 True；关=旧纯 soft-argmax）。配方 `posnet_lr_mult 0.25 / phase1_epochs 4`——**与 osx_fairbase(16.29) 逐项一致**（核对 `output/osx_fairbase/log/train_logs.txt`：lr 5e-5 / batch 64 / end 4 / phase1 4 / posnet_lr_mult 0.25 / posnet_grad_clip 0.5），故 fair4↔gate↔16.29 在这些 knob 上单变量可比。**更正 7-01 "锁定配方=snap2 的 0.5/phase1-2" 的说法**：那是 snap2(joint_polish_f) 自己的配方，不是 16.29 对标配方；对标 16.29 应匹配 osx_fairbase = 0.25/phase1-4。唯一口径瑕疵 = fair4 用 `--continue_train` 从 gate snap1 续 epoch 2→4（只跑 cosine 尾 2 epoch），非 fresh 4-epoch schedule；但这是"gate 上叠 L728 再续训"的正确设计，不影响 L728 判负。
+
+| 指标 | snap2@fixed | gate snap1（改前） | **fair4 snap2**（L728,+1ep） | 判定 |
+|---|---:|---:|---:|---|
+| InterHand PA | 16.78 | **16.80** | **17.05**（itr1500 17.14 / itr3000 17.05） | ❌ 退 +0.25 |
+| InterHand wrist-rel | 84.13 | 83.93 | 84.16 / itr3000 84.43 | ❌ 退 |
+| UBody `[wa]` NME | 0.229 | — | **0.230** | 持平（仍输 OSX 0.219）|
+| UBody PA MPVPE Hands | — | — | 10.43 | 正常 |
+| 生死闸 OSX-ft | | 16.29（+0.51） | 16.29（**+0.76**） | 更远 |
+
+epoch 内轨迹从 16.80 **单调抬升停在 17.05、不回落** = 回归特征非欠训。`loss_hand_aux_coord` 全程噪声 0.31–0.51、收 ~0.38–0.39，**不比 gate 的 ~0.36 更低**（略差）。稳定性仍 ✅（零 NaN）。
+
+**结论：L728 假设被证伪。** gate 判据"aux 在学但 PA 不动 = 精修坐标没进 regressor"——喂进去后 PA **确实动了但方向错**（16.80→17.05）。含义：①"没喂进 regressor"不是瓶颈，喂进去有反应说明路是通的；②**坐标输入对 3D hand PA 是弱杠杆，精修版不是更好的输入**——精修 xy 在 2D NME 好 ~15-20%，但它对 3D SMPL-X 手姿只是次要 conditioning；换来源/尺度（xy 来自 decoder、z 来自 soft-argmax，provenance 不一致）+ detach（坐标头无法反向 co-adapt regressor 需求）反而扰动了本吃 soft-argmax 的 regressor。③ UBody `[wa]` 又一次确认 body 侧（不动），归 T1。**decoder 坐标精修结构线到此判定"不打闸"**（平台 ~16.8，与 16.29 反而更远），与 `h4wpp-competitor` 判断一致：杠杆在融合/expert 不在 decoder 坐标机制。
+
+**处置**：本 run 作 Table 4 负消融行（"refined coord→regressor = PA +0.25、`[wa]` 无变化"）+ gate 那行（"迭代采样+aux 单独价值"）；`use_refined_hand_coord` 回退默认关、不进主 recipe。fair4↔gate 是干净单变量对比（同 posnet_lr_mult 0.25 / phase1 4，唯一差 = L728 开关 + 续训 vs 暖启），退 0.25mm 结论可靠。**下一步见 continue.txt / roadmap 主线换挡**。
+
 ## 2026-07-02
 
 ### body-shape T1 评测收口：UBody `[wa]` 真提升但伴随 `[abs]`/MPVPE 退化

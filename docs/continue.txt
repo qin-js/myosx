@@ -9,7 +9,9 @@
 
 - **7-02：T1 收口（归因修正）+ gate epoch0/1 + L728 排队。** T1（只训 shape_out+cam_out）：UBody `[wa]` **0.204 反超 OSX 0.219** ✅ / wrist-rel 83.36 ✅ / InterHand 16.78 逐字不变（归因干净）✅，但 `[abs]` 0.367 崩 + EHF Face 6.39 ❌（crosspath：cam_z 域偏移）→ **原样不可上表，下一步 shape/cam 拆分消融**。**6-27"[wa] gap=100% 手头"作废**——body 侧 shape/cam 覆盖整个 gap；两条正交杠杆 = decoder 打 InterHand 闸 + T1 打 UBody `[wa]` 格。gate：17.06→16.84→16.80（≈snap2 未钻），aux 0.36<0.44 但 PA 没吃到 → **L728（精修坐标喂 regressor）为 decoder 线下一步**，从 gate snapshot_1 暖启。基建：`--testset AGORA` + `--trainset_3d` CLI 已进 main。详见 experiment_log.md 2026-07-02。
 
-更新时间：2026-07-02
+- **7-03：L728 = 负结果，decoder 坐标精修结构线判定「不打闸」。** `output/coordrefiner_l728_fair4`（暖启 gate snap1 16.80，+1 epoch）：InterHand PA **16.80→17.05 退 +0.25**（itr 内单调抬升不回落 = 回归非欠训）、wrist-rel 退、UBody `[wa]` 0.230 不动、aux 收 ~0.38 不比 gate 0.36 更低。**证伪 gate 判据"精修没进 regressor"**——喂进去 PA 确实动了但方向错：坐标输入对 3D hand PA 是弱杠杆、精修版不是更好的输入。**结论：decoder 结构线到此不打闸**（平台 ~16.8，离闸 16.29 反更远 +0.76），与 `h4wpp-competitor` 判断一致（杠杆在融合/expert 非 decoder 坐标机制）。本 run 作 Table 4 负消融行；`use_refined_hand_coord` 回退关。**主线换挡见下「下一步建议」改写。** 详见 experiment_log.md 2026-07-03。
+
+更新时间：2026-07-03
 
 这个文件只保留重开会话时必须先看的信息。完整项目总览见
 `docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，路线判断见
@@ -37,14 +39,19 @@
 
 ## 下一步建议
 
-**WA2D 线已收口（见上 6-30 收口）。主线转 InterHand 公平基线——详细计划见 `docs/post_stage3_roadmap.md` §0″。**
+**decoder 坐标精修结构线已判定「不打闸」（7-03 L728 负结果收口）。InterHand PA 的杠杆不在 2D 坐标机制——PA 是 Procrustes 对齐、只测手内 3D articulation，由 `hand_regressor` 的 3D pose 输出决定，与我们一直在优化的 2D 坐标精修/aux 2D loss 近正交（held-out HInt 2D 我们赢、in-domain InterHand PA 追不上，正是同一事实的两面）。主线换挡:停止再投 decoder 结构变体去追 PA。**
 
-> **（2026-07-01 起主线）目标下沉为「相对 stock OSX 全绿、非顶会可发」→ 结构性 decoder 已实现、gate 训练中，盯 InterHand PA 钻到公平基线 16.29↓ 这道闸；表格/实验规划见 `docs/paper_table_plan.md`、路线见 `post_stage3_roadmap.md` §0⁗。下面 6-30 的轨 A/轨 B 仍有效：轨 B 公平基线已跑出 16.29（OSX 略胜），轨 A held-out HInt 作底。**
+> **（2026-07-03 换挡）目标定位不变（相对 stock OSX 全绿、非顶会可发）,但方法 claim 的落点从「decoder 结构优越」改为「① 我们赢的 2D 轴（held-out HInt）+ ② 高效冻结骨干 recipe + ③ decoder 结构消融（含 L728/gate 负结论）作分析」。追 InterHand PA 只剩两个便宜、对靶的杠杆值得一试,试完即封口。**
 
-1. **轨 A（零训练）**：headline 让给 held-out HInt（两模型都没训过、我们 0.487→0.480 赢）；InterHand 降级为诚实 in-domain 结果（标注 fine-tune-vs-zero-shot caveat）。立刻化解审稿人质疑。
-2. **轨 B（受控实验，实施中）**：给 `OSX.py` 补冻结脚手架，用**相同冻结 split + 相同数据 + 相同 schedule** 微调 OSX 原生 MMCV 手 decoder，对比我们的 pytorch decoder。判定矩阵见 roadmap §0″：追上=数据带来的、更差=我们 decoder 真更强。决定方法 claim 强度，必做。
-3. **rotmat pose loss**（`use_hand_rotmat_pose_loss`，已实现未试）：便宜低风险的 InterHand 侧 polish（仅 InterHand/BEDLAM 可靠 hand pose GT 处 fire，UBody 伪 GT 吃不到），当 ablation。
-4. **teacher distillation**：把 UBody 锁到 parity（追平、超不过 teacher）。身体 shape T1(`--train_body_shape`)仍是独立附带线，默认关闭。
+**A. 若还想动 InterHand PA 16.78→16.3（只剩这两个对靶杠杆,各一次即封口）:**
+1. **杀/降 aux 2D coord loss**（`hand_aux_coord_loss_weight` 1.0→0.1 或 0）:直接验证假设「aux 2D 监督在和 3D pose 抢梯度/容量」。gate aux 0.36 好但 PA 卡 16.80、L728 把更好的 2D 喂进去 PA 反退——都指向 2D 精度 ⊥（甚至反相关于）3D PA。最便宜的诊断,先做。
+2. **rotmat pose loss**（`use_hand_rotmat_pose_loss`,已实现未试）:直接在旋转矩阵空间监督手姿——**这才是 PA 真正 care 的目标**,仅 InterHand/BEDLAM 可靠 hand pose GT 处 fire。L728 证 2D 坐标杠杆无效后,pose 空间监督是逻辑上唯一对靶的下一步。低风险。
+   → 若 1+2 都不动 PA,则 InterHand PA 认「in-domain 追平/略负」,不再纠缠。
+
+**B. 无论 A 结果如何,论文故事锁在我们赢的轴（已决定的目标下沉,现在有 L728 佐证更硬）:**
+3. **headline = held-out HInt**（两模型都没训过、我们 0.487→0.480 赢;HInt 测 wrist-aligned 2D,正是我们 decoder 强的轴）;InterHand 降级为诚实 in-domain（fine-tune-vs-zero-shot caveat）。轨 B 公平基线 16.29 已跑出（OSX 略胜 0.49mm）——写成「各自最佳 init、同数据微调,in-domain 追平/略负,held-out 领先」。
+4. **decoder 结构消融进 Table 4**:L728（refined coord→regressor = PA +0.25、`[wa]` 无变化）+ gate（迭代采样+aux 单独价值）作负/中性行,科学价值 = 「证明 2D 坐标精修与 whole-body 手 3D PA 正交」,是分析贡献不是失败。
+5. **正交附带线**:UBody `[wa]` 走 T1 shape/cam（0.204 已反超 OSX,但需拆 shape/cam 消融压 `[abs]` 退化,见 7-02）;teacher distillation 锁 UBody parity。均独立于 decoder 线。
 
 ## 常用评估命令（pytorch 路径现在自动带编码器修复）
 
