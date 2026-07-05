@@ -12,6 +12,34 @@ from mmpose.models import build_posenet
 from mmcv import Config
 import os
 
+
+_MS_DEFORM_ATTN_IM2COL_STEP = 64
+
+
+def _ms_deform_attn_pad_size(batch_size):
+    """MMCV ms_deform_attn requires B>64 to be divisible by im2col_step."""
+    if batch_size <= _MS_DEFORM_ATTN_IM2COL_STEP:
+        return 0
+    return (-batch_size) % _MS_DEFORM_ATTN_IM2COL_STEP
+
+
+def _pad_batch_dim(x, pad_size):
+    if pad_size == 0:
+        return x
+    return torch.cat((x, x.new_zeros((pad_size, *x.shape[1:]))), dim=0)
+
+
+def _pad_deform_decoder_inputs(feats, coord_init, query_init):
+    batch_size = query_init.shape[0]
+    pad_size = _ms_deform_attn_pad_size(batch_size)
+    if pad_size == 0:
+        return feats, coord_init, query_init, batch_size
+    feats = [_pad_batch_dim(feat, pad_size) for feat in feats]
+    coord_init = _pad_batch_dim(coord_init, pad_size)
+    query_init = _pad_batch_dim(query_init, pad_size)
+    return feats, coord_init, query_init, batch_size
+
+
 class Model(nn.Module):
     def __init__(self, encoder, body_position_net, body_rotation_net, box_net, hand_position_net, hand_roi_net, hand_decoder,
                  hand_rotation_net, face_position_net, face_roi_net, face_decoder, face_regressor):
@@ -313,7 +341,11 @@ class Model(nn.Module):
         _, hand_joint_img, hand_img_feat_joints = self.hand_position_net(hand_feats[-2])  # (2N, J_P, 3) in (hand_hm_shape[2], hand_hm_shape[1], hand_hm_shape[0]) space
         # [-2]: scale=2, because the roi size = (hand_hm_shape*scale//2)
         hand_coord_init = self.heatmap2norm(hand_joint_img, cfg.output_hand_hm_shape)
-        hand_img_feat_joints = self.hand_decoder(hand_feats, coord_init=hand_coord_init.detach(), query_init=hand_img_feat_joints)
+        hand_feats_dec, hand_coord_init_dec, hand_query_init_dec, hand_decoder_batch = _pad_deform_decoder_inputs(
+            hand_feats, hand_coord_init.detach(), hand_img_feat_joints)
+        hand_img_feat_joints = self.hand_decoder(
+            hand_feats_dec, coord_init=hand_coord_init_dec, query_init=hand_query_init_dec)
+        hand_img_feat_joints = hand_img_feat_joints[:hand_decoder_batch]
         # print(f"hand_img_feat_joints.shape: {hand_img_feat_joints.shape}")
         # hand regression head
         hand_pose = self.hand_regressor(hand_img_feat_joints, hand_joint_img.detach())
@@ -335,7 +367,11 @@ class Model(nn.Module):
         face_coord_init = self.heatmap2norm(face_joint_img, cfg.output_face_hm_shape)
         # print(f"face_coord_init.shape: {face_coord_init.shape}")
         # print(f"face_img_feat_joints.shape: {face_img_feat_joints.shape}")
-        face_img_feat_joints = self.face_decoder(face_feats, coord_init=face_coord_init.detach(), query_init=face_img_feat_joints)
+        face_feats_dec, face_coord_init_dec, face_query_init_dec, face_decoder_batch = _pad_deform_decoder_inputs(
+            face_feats, face_coord_init.detach(), face_img_feat_joints)
+        face_img_feat_joints = self.face_decoder(
+            face_feats_dec, coord_init=face_coord_init_dec, query_init=face_query_init_dec)
+        face_img_feat_joints = face_img_feat_joints[:face_decoder_batch]
         # face regression head
         expr, jaw_pose = self.face_regressor(face_img_feat_joints, face_joint_img.detach(), face_feats[-1])
         jaw_pose = rot6d_to_axis_angle(jaw_pose)
