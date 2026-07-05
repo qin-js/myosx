@@ -1,10 +1,45 @@
 # Stage 3 之后的路线与决策（in-the-wild hand 主线）
 
-更新时间：2026-07-01
+更新时间：2026-07-04
 
 本文件是**前瞻性路线/决策文档**，承接 Stage 3 收口之后的方向选择。
 - 按时间的结果记录见 `docs/experiment_log.md`；当前状态快照见 `docs/project_overview.md`。
 - 本文件回答的是：**手部微调收口后，往哪走、为什么、风险多大、怎么判定生死。**
+
+---
+
+## 0⁵. 2026-07-04 更新（五）：OSX decoder 死代码勘误 + 公平基线三测 → headline 换轴「whole-body 手部抗侵蚀」
+
+### 勘误（推翻 §0‴ 根因①②的对标依据）
+
+亲自核实 vendored mmpose：**OSX normal 路径手部 decoder 的坐标机制全是死代码**——`transformer.py:613-637` 逐层坐标回归+参考点迭代整段被注释（6 层共用 detach 的 `coord_init` 不动）、`poseur.py:158` 只返回末层特征、RLE/sigma/noisy-sample 在 `forward_mesh_recovery` 路径全不执行。**产出 19.58/16.29 的 OSX decoder = 6 层、3 尺度、固定参考点、纯特征精修器**，无任何 decoder 坐标监督。含义：
+- §0‴ 根因①②是读 config 声明所得、与实际 forward 相反 → **7-01 坐标精修大改瞄错靶**（加的是 OSX 本来就没有的机制），gate≈snap2、L728 负、rotmat 才动 PA 全部自洽；
+- §0‴ "叠 RLE（OSX 看家武器）"作废——OSX 实际没用 RLE；
+- 与 OSX-ft 的**真实未测差异变量** = {DCNv4 posnet 冷启+反向脆弱 vs conv PositionNet（osx_l 可暖启）、3 vs 6 层、topo/occlusion vs 素 attn、detach（OSX 不 detach）、预训练本钱}——恰好都是 Table 4 组件消融必跑项；
+- "天花板≈16.5"限定为**当前栈**的天花板，非"decoder 概念"；
+- aux0 消融 confound：关 loss 后 bbox_embed 仍无监督迭代参考点，只证"有机制必须配监督"。
+详见 experiment_log.md 2026-07-04 追加①、记忆 `osx-decoder-coord-machinery-is-dead-code`。
+
+### P0 公平基线三测（HInt/UBody/EHF 已补，此前只有 InterHand）
+
+| 口径 | stock | OSX-ft | 我们(rotmat s0) | 判定 |
+|---|---:|---:|---:|---|
+| InterHand PA / wrist-rel | 19.58 / 86.32 | **16.29 / 82.87** | 16.53 / 85.09 | 输 ❌ |
+| **EHF PA MPVPE Hands** | 15.97 | **16.85（侵蚀+0.88）** | **15.61** | **赢 ft 1.24** ✅ |
+| **UBody PA MPVPE Hands** | 10.29 | **10.59（侵蚀+0.30）** | **10.00** | **赢 ft 0.59** ✅ |
+| HInt `[all wa]` | 0.487 | **0.480** | 0.481 | **精确平** ⚪ |
+| UBody `[wa]` | 0.219 | **0.220（没动）** | 0.231 | 输双方 ❌ → 归 T1 |
+
+- **"held-out HInt 赢"头条死亡**：0.480 精确平局（细分逐行一致），0.487→0.480 归微调数据——hand-crop 2D 对 decoder 家族饱和。轨 A（§0″）的 headline 让位方案就此作废。
+- **新 headline = whole-body 手部抗侵蚀**：OSX-ft 仅 1 epoch hand-heavy 微调就在 whole-body 口径侵蚀（EHF +0.88/UBody +0.30），我们同数据两口径均优 stock——**它沿 Pareto 前沿滑动，我们把前沿外推**。写成「0.24mm in-domain 让步 ↔ whole-body 3D 手全面赢（对 stock+ft），单模型无外部专家」，正面对位 H4W++（外挂 WiLoR 解决同一问题）。机制假设（可消融）：我们的 aux 2D+热图监督是抗漂移锚，OSX decoder 无锚。
+- **UBody `[wa]` 对换 decoder/喂数据双免疫** → T1 shape/cam 拆分是该格唯一杠杆（7-02 归因获第三方印证）。
+
+### 下一步（优先级）
+
+1. **fairbase 训满 4ep + 逐 snapshot 评 InterHand+EHF Hands+UBody Hands** → 侵蚀轨迹图（headline 封面证据；先跑防翻案）+ 确认 7-04 三测 snapshot 归属（应=snapshot_0）。
+2. T1 shape/cam 拆分（不变）。
+3. 组件消融升级为"抗侵蚀归因"：首推 **posnet 换 conv PositionNet（osx_l 暖启）+ detach off** 探针；topo/occlusion 消融照旧。
+4. 最佳报告点 = `coordrefiner_rotmat/snapshot_0`。
 
 ---
 
@@ -57,6 +92,8 @@
 同一 400-iter 子集(3200 手，L:680/R:2520)：**OSX-ft(itr1500，1/3 epoch) PA 15.53 vs 我们 snap2 15.85 → OSX-ft 领先 0.32mm，且未收敛**(wrist-rel 80.80 vs 81.11 同向)。子集偏易(我们全量 16.78)，但**同口径下 OSX 仍在前**。backbone 冻结、coord loss 相同 → 差距是 **decoder 架构/实现**，非 loss/数据。**"−14% 是我们 decoder 的方法贡献"守不住**；待 OSX-ft 收敛 + 全量复评再定幅度。
 
 ### Decoder 根因（代码审查，杠杆排名）
+
+> ⚠️ **2026-07-04 勘误（见 §0⁵ / experiment_log 7-04 追加①）**：下列 ①② 中对 OSX 侧的描述**错误**——OSX Poseur 的逐层坐标回归、参考点迭代、RLE/aux 监督在 vendored 代码里**全被注释/旁路（死代码）**，实际 OSX decoder 也是"固定参考点的特征精修器"（但 6 层、素 attn、暖启、不 detach）。①②作为对我方代码的描述仍成立，作为"与 OSX 的差异"不成立；⑤（topo/occlusion）与"3 vs 6 层"仍是真差异。下文"叠 RLE loss"建议同此作废。
 
 1. **我们的 decoder 是"特征精修器"不是"坐标精修器"**：被监督的 2D 手坐标全来自 `hand_position_net` soft-argmax(`model_core.py:721`)；`hand_decoder`(725) 只输出**特征**喂 regressor，**无坐标输出、无坐标监督**，唯一梯度是 pose→FK 间接。OSX Poseur **每层回归坐标 + 每层 RLE/坐标 aux 监督**(`hand_decoder.py:86-88,118-144`)。→ 稀疏间接 vs 密集直接监督，解释 sample-efficiency 差。
 2. **参考点全程不迭代**(`my_decoder.py:661-672`)：从 `coord_init` 算一次、所有层共用、layer 只返回特征；OSX 每层用 offset 更新参考点。3 层都盯同一 soft-argmax 初始点，深层纠不了坏 init（**末端最吃亏**=distal gap）。

@@ -11,7 +11,11 @@
 
 - **7-03：L728 = 负结果，decoder 坐标精修结构线判定「不打闸」。** `output/coordrefiner_l728_fair4`（暖启 gate snap1 16.80，+1 epoch）：InterHand PA **16.80→17.05 退 +0.25**（itr 内单调抬升不回落 = 回归非欠训）、wrist-rel 退、UBody `[wa]` 0.230 不动、aux 收 ~0.38 不比 gate 0.36 更低。**证伪 gate 判据"精修没进 regressor"**——喂进去 PA 确实动了但方向错：坐标输入对 3D hand PA 是弱杠杆、精修版不是更好的输入。**结论：decoder 结构线到此不打闸**（平台 ~16.8，离闸 16.29 反更远 +0.76），与 `h4wpp-competitor` 判断一致（杠杆在融合/expert 非 decoder 坐标机制）。本 run 作 Table 4 负消融行；`use_refined_hand_coord` 回退关。**主线换挡见下「下一步建议」改写。** 详见 experiment_log.md 2026-07-03。
 
-更新时间：2026-07-03
+- **7-04：rotmat pose loss 触顶 16.53（未过闸）+ aux-off 更差 → InterHand PA 线封口。** 两 run 暖启 gate snap1(16.80)、同 osx_fairbase 配方(posnet 0.25/phase1 4)、L728 关。**rotmat(aux 开)**：PA 16.80→**16.53**(snap0，−0.27，与 L728 +0.25 反向 → pose 空间是对靶杠杆)，但 **epoch1 平台**(16.55~16.58)、**未过闸 16.29(+0.24)**、我方更多预算 → **冻结骨干+我们 decoder 的 InterHand 3D PA 天花板 ≈16.5，结构性差 OSX 原生 decoder ~0.2mm**。**aux-off** 更差(16.75→16.88 在退) → **证伪"aux 抢容量"，aux 该留**。护栏 @snap0 全守：UBody `[wa]` 0.231 / `[abs]` 0.318 / PA Hands 10.00(最好) / EHF Face 6.15 / HInt 0.481(赢点守住)；只 InterHand wrist-rel 退 ~1mm(PA↔wrist-rel 窄权衡)。**决定：停(已平台)，取 snap0 16.53；rotmat 正向 ablation + L728 负 + aux 正 三行入 Table 4。InterHand PA 探索封口，认 in-domain 16.53 略逊 OSX-ft 16.29、不 claim 优越。** 详见 experiment_log.md 2026-07-04。
+
+- **7-04 补（重大）：OSX decoder 死代码发现 + P0 公平基线三测 → headline 换轴。** ① 代码审查（已亲自验证）：OSX 原生 decoder 的逐层坐标回归/参考点迭代/RLE **全是死代码**（`transformer.py:613-637` 被注释、`poseur.py:158` 只回末层特征）——**16.29 来自"6 层、固定参考点、纯特征精修器"**；roadmap §0‴①②对标依据错误、**7-01 坐标精修大改瞄错靶**；与 OSX-ft 的真实未测差异变量 = {DCNv4 posnet 冷启 / 3v6 层 / topo-occ / detach / 预训练本钱}；aux0 结论有 confound（只证"有机制必须配监督"）。见记忆 `osx-decoder-coord-machinery-is-dead-code`。② fairbase 补测 HInt/UBody/EHF：**HInt 0.480 精确平局（"held-out 赢"头条死，0.487→0.480 归微调数据）**；但 **OSX-ft whole-body 手部侵蚀曝光**——EHF Hands 15.97→**16.85**、UBody Hands 10.29→**10.59**，我们同数据 16.53 时 EHF **15.61**、UBody **10.00** 全面更好 → **新 headline = "0.24mm in-domain 让步 ↔ whole-body 3D 手全面赢（对 stock+ft），单模型无外部专家"**（对位 H4W++）。UBody `[wa]` ft 0.220≈stock 0.219 → 该格对换 decoder/喂数据双免疫，**T1 是唯一杠杆**（第三方印证）。诚实项：wrist-rel 公平口径 82.87 vs 85.09 我们输。**下一步 = fairbase 训满 4ep 出侵蚀轨迹图（先跑，防翻案）**。详见 experiment_log.md 2026-07-04 追加①②。
+
+更新时间：2026-07-04
 
 这个文件只保留重开会话时必须先看的信息。完整项目总览见
 `docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，路线判断见
@@ -37,21 +41,24 @@
 | EHF Face PA-MPVPE | 6.09 | 6.15 | ~追平(免费) |
 | HInt [all wa] NME | 0.487 | 0.480 | 赢(held-out hand-crop) |
 
+**7-04 起报告点改为 `coordrefiner_rotmat/snapshot_0`，且对照基准升级为公平基线 OSX-ft**（fairbase 三测已补齐，完整三方表见 experiment_log.md 2026-07-04 追加②）：
+InterHand **16.53**(ft 16.29 ❌) / wrist-rel 85.09(ft 82.87 ❌) / **EHF Hands 15.61(ft 16.85 ✅ 赢1.24)** / **UBody PA Hands 10.00(ft 10.59 ✅ 赢0.59)** / HInt 0.481(ft 0.480 ⚪平) / UBody `[wa]` 0.231(ft 0.220 ❌，归 T1)。
+
 ## 下一步建议
 
-**decoder 坐标精修结构线已判定「不打闸」（7-03 L728 负结果收口）。InterHand PA 的杠杆不在 2D 坐标机制——PA 是 Procrustes 对齐、只测手内 3D articulation，由 `hand_regressor` 的 3D pose 输出决定，与我们一直在优化的 2D 坐标精修/aux 2D loss 近正交（held-out HInt 2D 我们赢、in-domain InterHand PA 追不上，正是同一事实的两面）。主线换挡:停止再投 decoder 结构变体去追 PA。**
+**decoder 坐标精修结构线已判定「不打闸」（7-03 L728 负结果收口）。InterHand PA 的杠杆不在 2D 坐标机制——PA 是 Procrustes 对齐、只测手内 3D articulation，由 `hand_regressor` 的 3D pose 输出决定，与我们一直在优化的 2D 坐标精修/aux 2D loss 近正交。7-04 补：两个对靶 pose 杠杆也已试完，InterHand PA 线整体封口。7-04 晚再补：HInt "赢"被 fairbase 三测修正为**精确平局**（0.480 vs 0.480），2D 正交性结论反而更硬（hand-crop 2D 对 decoder 家族饱和、由冻结管线+数据决定）；同时 OSX decoder 死代码发现坐实"7-01 大改瞄错靶"。主线 = B（论文故事，headline 已换轴）。**
 
-> **（2026-07-03 换挡）目标定位不变（相对 stock OSX 全绿、非顶会可发）,但方法 claim 的落点从「decoder 结构优越」改为「① 我们赢的 2D 轴（held-out HInt）+ ② 高效冻结骨干 recipe + ③ decoder 结构消融（含 L728/gate 负结论）作分析」。追 InterHand PA 只剩两个便宜、对靶的杠杆值得一试,试完即封口。**
+> **（2026-07-04 晚 状态）目标定位不变（相对 stock OSX 全绿、非顶会可发），方法 claim 落点换轴 = 「① whole-body 3D 手对公平基线全面赢（EHF 15.61 vs 16.85、UBody 10.00 vs 10.59）+ ② held-out 2D 不落后（HInt 精确平）+ ③ 高效冻结骨干 recipe + ④ 消融升级为"抗侵蚀归因"（rotmat 正/aux 正/L728 负 + 待补组件消融）」。InterHand 诚实略逊（16.53 vs 16.29，wrist-rel 85.09 vs 82.87），不 claim in-domain 优越。**
 
-**A. 若还想动 InterHand PA 16.78→16.3（只剩这两个对靶杠杆,各一次即封口）:**
-1. **杀/降 aux 2D coord loss**（`hand_aux_coord_loss_weight` 1.0→0.1 或 0）:直接验证假设「aux 2D 监督在和 3D pose 抢梯度/容量」。gate aux 0.36 好但 PA 卡 16.80、L728 把更好的 2D 喂进去 PA 反退——都指向 2D 精度 ⊥（甚至反相关于）3D PA。最便宜的诊断,先做。
-2. **rotmat pose loss**（`use_hand_rotmat_pose_loss`,已实现未试）:直接在旋转矩阵空间监督手姿——**这才是 PA 真正 care 的目标**,仅 InterHand/BEDLAM 可靠 hand pose GT 处 fire。L728 证 2D 坐标杠杆无效后,pose 空间监督是逻辑上唯一对靶的下一步。低风险。
-   → 若 1+2 都不动 PA,则 InterHand PA 认「in-domain 追平/略负」,不再纠缠。
+**A. InterHand PA 两个对靶杠杆已试完、封口（7-04）:**
+1. **rotmat pose loss**（`--use_hand_rotmat_pose_loss`）= **正结果但触顶**：16.80→**16.53**(snap0，−0.27，与 L728 +0.25 反向 → 坐实 pose 空间才是对靶杠杆)，但 epoch1 平台、**未过闸 16.29(+0.24)**。当前栈天花板 ≈16.5（7-04 死代码发现后，"结构性"归因限定为 DCNv4 冷启 posnet+3 层 topo/occ+detach 这套栈，非"decoder 概念"）。**recipe 保留 rotmat + aux**。
+2. **aux-off**（`--hand_aux_coord_loss_weight 0`）= **更差**（16.75→16.88 在退）→ aux 该留。⚠️ confound 注记：关 loss 后 bbox_embed 仍在无监督迭代参考点——此实验只证"装了坐标机制必须配监督"，不证"坐标机制优于 OSX 式固定参考点"（OSX 的坐标机制是死代码，见 7-04 追加①）。
+   → 结论：PA 从 16.78 推到 **16.53**（护栏全守），穿不过 16.29。**不再纠缠**，认 in-domain 略负。可选收尾：补对照 gate snap1 +1ep rotmat 关，把 16.53 干净归给 rotmat（非必须）。
 
-**B. 无论 A 结果如何,论文故事锁在我们赢的轴（已决定的目标下沉,现在有 L728 佐证更硬）:**
-3. **headline = held-out HInt**（两模型都没训过、我们 0.487→0.480 赢;HInt 测 wrist-aligned 2D,正是我们 decoder 强的轴）;InterHand 降级为诚实 in-domain（fine-tune-vs-zero-shot caveat）。轨 B 公平基线 16.29 已跑出（OSX 略胜 0.49mm）——写成「各自最佳 init、同数据微调,in-domain 追平/略负,held-out 领先」。
-4. **decoder 结构消融进 Table 4**:L728（refined coord→regressor = PA +0.25、`[wa]` 无变化）+ gate（迭代采样+aux 单独价值）作负/中性行,科学价值 = 「证明 2D 坐标精修与 whole-body 手 3D PA 正交」,是分析贡献不是失败。
-5. **正交附带线**:UBody `[wa]` 走 T1 shape/cam（0.204 已反超 OSX,但需拆 shape/cam 消融压 `[abs]` 退化,见 7-02）;teacher distillation 锁 UBody parity。均独立于 decoder 线。
+**B.（现主线）headline = whole-body 手部抗侵蚀 + 高效 recipe + 消融:**
+3. **headline = whole-body 3D 手（对公平基线的赢）**：OSX-ft 拿 16.29 的代价 = EHF Hands 15.97→**16.85**(+0.88)、UBody Hands 10.29→**10.59**(+0.30)——hand-heavy 微调的经典侵蚀；我们同数据 16.53 的同时 EHF **15.61**、UBody **10.00**，两口径均优 stock+ft。写成「in-domain 0.24mm 让步 ↔ whole-body 全面赢，单模型无外部专家」，正面对位 H4W++（它靠外挂 WiLoR 解决同一问题）。**HInt 降级为支撑证据**（0.480 精确平 = 特化未牺牲 held-out 泛化；0.487→0.480 归微调数据，不再单独当 headline）。**待办（先跑，防翻案）：fairbase 训满 4ep、逐 snapshot 评 InterHand+EHF Hands+UBody Hands → "InterHand PA vs EHF Hands"侵蚀轨迹图；并确认 7-04 三测 snapshot 归属（应=产出 16.29 的 snapshot_0）。**
+4. **消融叙事升级**：Table 4 三行（rotmat 正/aux 正/L728 负）保留，新增核心问题「**哪个组件买来抗侵蚀**」（假设：aux 2D+热图监督是锚，OSX decoder 无锚故漂）。首推探针 = **posnet 换回 conv `PositionNet`（osx_l 可直接暖启）+ detach off**，一石二鸟：单变量测 7-04 追加①的最大嫌疑簇（DCNv4 冷启/脆弱/detach）+ 归因抗侵蚀来源；topo/occlusion 消融照旧必跑（方法节存在性论证）。
+5. **正交附带线**：UBody `[wa]` 走 T1 shape/cam 拆分——fairbase 印证该格对"换 decoder/喂数据"双免疫（ft 0.220≈stock 0.219），**T1（0.204 已反超）是唯一杠杆**，需拆 shape/cam 消融压 `[abs]` 退化（见 7-02）；teacher distillation 备选。均独立于 decoder 线。
 
 ## 常用评估命令（pytorch 路径现在自动带编码器修复）
 

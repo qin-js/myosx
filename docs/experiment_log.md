@@ -2,6 +2,81 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-07-04
+
+### rotmat pose loss = 对靶正结果但一个 epoch 触顶 16.53（未过闸）；aux-off 更差（"aux 抢容量"证伪）→ InterHand PA 线封口
+
+两个 run 均暖启自 `coordrefiner_gate/snapshot_1`(16.80)、`--init_trained_path` fresh 4-epoch schedule、`--no_refined_hand_coord`(L728 关)、posnet_lr_mult 0.25 / phase1 4——与 osx_fairbase(16.29) 同配方。`coordrefiner_rotmat` = 加 `--use_hand_rotmat_pose_loss`(aux 默认留 1.0)；`coordrefiner_rotmat_aux0` = 再加 `--hand_aux_coord_loss_weight 0`。**两两单变量干净**（rotmat vs aux0 只差 aux 权重 1.0/0.0）。
+
+**rotmat（aux ON）PA 轨迹**：
+
+| ckpt | ~ep | PA | wrist-rel |
+|---|---|---:|---:|
+| gate snap1（起点） | 0 | 16.80 | 83.93 |
+| **snapshot_0** | 1 | **16.53** ⬅最优 | 85.09 |
+| snapshot_1_itr1500 | 1.3 | 16.57 | 84.70 |
+| snapshot_1_itr3000 | 1.6 | 16.55 | 84.52 |
+| snapshot_1 | 2 | 16.58 | 85.27 |
+
+**aux0（aux OFF）**：snapshot_0_itr1500 **16.75** → itr3000 **16.88**（在退）。
+
+**护栏 @ rotmat snapshot_0（最优 PA 点，全守）**：UBody `[wa]` 0.231 / `[abs]` 0.318（没像 T1 崩）/ PA MPVPE Hands **10.00**(snap2 10.11 → 反而最好) / EHF Face **6.15**(平) / HInt `[all wa]` **0.481**(snap2 0.480、OSX 0.487 → held-out 赢点守住)。唯一动的是 InterHand wrist-rel ~84→85。
+
+**三结论**：
+1. **rotmat 对靶有效但触顶**。16.80→**16.53**(−0.27)、与 L728 的 +0.25 正好反向 → 坐实"InterHand PA 的杠杆在 pose 空间、不在 2D 坐标"。**但 epoch1 完全没吃到**(16.53→16.55~16.58 平台/微升)，外推 ep2-3 仍 ~16.5，**未过闸 16.29(+0.24)** 且我方总预算更多(暖启点已 16.80)。→ **冻结骨干 + 我们 decoder 对 InterHand 3D PA 的天花板 ≈16.5，比 OSX 原生 decoder 16.29 结构性差 ~0.2mm，rotmat 收窄未抹平**。
+2. **关 aux 更差 → 证伪"aux 抢容量"(假设 E)**。单变量下 aux 关掉 PA 16.75→16.88 且退，明显劣于 aux 开的 16.53。aux 对 PA 净正/中性，**recipe 保留 aux=1.0**。
+3. **PA 收益不打护栏，只 wrist-rel 退 ~1mm**（PA↔wrist-rel 窄权衡：rotmat 只监督手指相对旋转 → Procrustes articulation 到处变好(UBody PA Hands 10.00 也印证)，但 InterHand 非-Procrustes 的腕相对全局摆放漂；UBody/EHF 的 3D 均未退 → 非广义退化）。
+
+**决定：停，不训 ep2-3**（已平台，穿不过 16.29）。**rotmat 最优点 = snapshot_0(16.53)**；aux0 弃。rotmat 作 Table 4 **正向 ablation 行**，与 L728 负行、aux 正向配对：三行讲清"pose 空间监督=+0.27 且护栏全守/held-out 不动；2D 坐标监督(aux)有益该留；精修坐标喂 regressor(L728)有害"——2D vs 3D-PA 杠杆正交性。
+
+**战略收口**：**InterHand PA 探索封口**，最优 in-domain **16.53**，诚实写"略逊 OSX-ft 16.29(+0.24、我方更多预算)"，不 claim in-domain PA 优越。论文重心不变——**held-out HInt 赢(0.481<0.487) + 全护栏追平 + 高效冻结 recipe**，decoder/loss 消融(rotmat 正 / aux 正 / L728 负)作方法分析。**可选收尾（非必须）**：补对照 gate snap1 +1ep、rotmat **关**（aux 开、L728 关），落在 gate 自身外推 ~16.6-16.7 即把 16.53 干净归给 rotmat（现为 vs 外推、略软）。（⚠️ 同日晚间被追加②修正：HInt "赢"被公平基线三测抹平，headline 已换轴，见下。）
+
+### 追加①：OSX 原生 decoder 的坐标机制全是死代码（代码审查，推翻 §0‴①②对标依据）
+
+亲自核实 vendored mmpose（normal 路径 = `main/OSX.py` → mmpose `Poseur`）：
+
+- `main/transformer_utils/mmpose/models/utils/transformer.py:613-637`：逐层 `reg_branches` 坐标回归 + reference point 迭代更新**整段被注释**——6 层 decoder 的参考点全程固定在传入的 `coord_init`（soft-argmax 坐标，detach）不动；
+- `poseur.py:158` `return dec_output.feat[-1]` 只返回**末层特征**；`poseur_head.py:398-403` `outputs_coords` 恒空；
+- RLE loss / sigma 不确定性 / noisy-reference-sample：`__init__` 构造了，但 `forward_mesh_recovery` 路径一概不调用（`get_*_rle_loss` 无调用方；`coord_init` 非空时 encoder 段 sigma 也被跳过）。
+
+→ **产出 stock 19.58 / 公平基线 16.29 的 OSX decoder = 6 层、3 尺度、固定参考点、纯特征精修器**（20 关节 query 间分组 self-attn（可学习 query_pos）+ MSDeformAttn(4 点) + FFN），监督完全靠 pose→FK 间接梯度，**无任何 decoder 坐标监督**；regressor（`HandRotationNet`，与我们同一个类）吃（末层特征, detach 的 soft-argmax 坐标）。
+
+**五条修正**：
+1. `roadmap` §0‴ 根因①（"OSX 每层回归坐标+RLE/aux 监督"）②（"每层迭代参考点"）是读 config 声明所得，与实际 forward 相反 → **7-01 坐标精修大改瞄错靶**：加的是 OSX 本来就没有的机制。gate≈snap2（16.80 vs 16.78）、L728 负（+0.25）、rotmat 才动 PA（−0.27），全部与此自洽。
+2. 与 OSX-ft 的**真实未测差异变量** = {DCNv4PositionNet 冷启+反向脆弱 vs conv PositionNet（osx_l 可直接暖启）、3 vs 6 层、topo/occlusion vs 素 self-attn、detach_hand_decoder_query（OSX 不 detach，pose 梯度回流 posnet 特征分支）、预训练本钱}。前四项均可单变量测，从未测过。
+3. **aux0 消融有 confound**：关 aux 权重后 `bbox_embed` 仍在逐层迭代参考点（靠间接 pose 梯度无监督漂移）→ "aux-off 更差"只证明"装了坐标机制必须配监督"，不证明"坐标机制优于 OSX 式固定参考点"。真正的固定参考点对照 = 7-01 前的老 decoder：snap2 16.78 vs gate 16.80 → **坐标机制对 PA 净贡献≈0、对 2D 为正**。
+4. "冻结骨干+我们 decoder 天花板≈16.5"应改写为"**当前栈（DCNv4 冷启 posnet + 3 层 topo/occ decoder + detach）的天花板≈16.5**"，不宜归咎"decoder 概念"。
+5. 论文引用 OSX 行为写"OSX 发布代码中该分支被禁用"，不写"Poseur 论文如何"；§0‴ 曾建议的"叠 RLE（OSX 看家武器）"同理作废——OSX 实际也没用 RLE。
+
+详见记忆 `osx-decoder-coord-machinery-is-dead-code`；roadmap §0‴ 已加勘误注。
+
+### 追加②：P0 公平基线三测（HInt/UBody/EHF）：HInt 头条被抹平 + OSX-ft whole-body 手部侵蚀曝光 → headline 换轴
+
+`output/osx_fairbase/result/{HInt,UBody,EHF}_result.txt`（7-04 远端补测同步）。口径注意：InterHand 16.29 来自 **snapshot_0 = 仅 1 epoch 微调**（本地 train log 只见 epoch 0，配比 IH~21/UBody~18/COCO~25 与我们一致）；**三测所用 snapshot 待远端确认（应与 16.29 同点）**。真伪核查过：UBody/EHF/[wa] 差异显著、HInt 逐行差 0.001-0.003，非误用我方 ckpt。
+
+| 口径 | stock OSX | **OSX-ft** | 我们（rotmat s0 / snap2） | 判定 |
+|---|---:|---:|---:|---|
+| InterHand PA | 19.58 | **16.29** | 16.53 / 16.78 | 输 ft 0.24 ❌ |
+| InterHand wrist-rel | 86.32 | **82.87** | 85.09 / 84.13 | 输 ft ~2 ❌（此前只对 stock 说"略好"） |
+| **EHF PA MPVPE Hands** | 15.97 | **16.85（退化+0.88）** | **15.61** / 15.67 | **赢 ft 1.24（~7%）** ✅ |
+| **UBody PA MPVPE Hands** | 10.29 | **10.59（退化+0.30）** | **10.00** / 10.15 | **赢 ft 0.59（~5.6%）** ✅ |
+| UBody PA MPJPE Hands | 10.55 | 10.85 | 10.28 | 赢 ft ✅ |
+| HInt `[all wa]` | 0.487 | **0.480** | 0.481 / 0.480 | **精确平** ⚪（头条死） |
+| HInt `[all abs]` | 0.451 | 0.445 | 0.447 / 0.445 | 平 ⚪ |
+| UBody `[wa]` NME | 0.219 | **0.220（没动）** | 0.231 / 0.229 | 输双方 ~0.010 ❌ |
+| UBody `[abs]` NME | 0.311 | 0.311（没动） | 0.318 / 0.316 | 略输 |
+| EHF Face | 6.09 | 6.09 | 6.15 | 略输 0.06 |
+| EHF PA MPVPE All | — | 48.70 | 48.79 / 48.65 | 平（body 冻结） |
+
+**三判读**：
+1. **HInt 精确平局 → "held-out HInt 赢"头条死亡**。不只总分平（0.480 vs 0.480），visible/occluded、per-finger、per-level **逐行几乎一致**（occluded wa 0.483 vs 0.482、tip 0.542 vs 0.542），遮挡模块在 occluded 子集也无残余优势。0.487→0.480 的收益 **100% 归微调数据**（与 InterHand −14% 同一归因陷阱，这次被公平基线当场戳破）；hand-crop held-out 2D 由冻结 box/ROI 管线+数据决定，**对 decoder 家族饱和**——"2D 轴正交"结论从我方内部证据升级为对照双方证据。
+2. **新赢点 = whole-body 3D 手（结构性）**。OSX-ft 仅 1 epoch hand-heavy 微调，EHF Hands 15.97→**16.85**、UBody Hands 10.29→**10.59**——拿 in-domain、丢 whole-body 的经典侵蚀（暖启特征空间整体漂向 InterHand crop 域）；我们同数据 16.53 的同时 EHF **15.61**、UBody **10.00**，两口径**均优于 stock**。**OSX-ft 沿 Pareto 前沿滑动，我们把前沿外推。** 机制假设（可消融验证）：OSX decoder 无任何 2D 锚（追加①），微调时无东西阻止特征漂移；我们的 per-layer aux 2D + posnet 热图监督即锚。
+3. **UBody `[wa]` 对"换 decoder"与"喂数据"双免疫**（ft 0.220 ≈ stock 0.219）→ 7-02 归因（body 侧 shape/cam）获第三方印证，**T1 拆分是该格唯一杠杆**。诚实项：我们 0.231 对 ft 0.220 的差距仍是 distal 签名（tip 0.294 vs 0.268、j3 0.246 vs 0.231、j1 持平）——小手末端 2D 上 OSX decoder 家族确实仍占优。
+
+**headline 改写**："hand-heavy 微调下，OSX 原生 decoder 的 in-domain 收益（16.29）以全身手部退化为代价（EHF +0.88 / UBody +0.30）；我们以 0.24mm in-domain 让步，换 whole-body 3D 手全面优于 stock 与公平基线（EHF −1.24 / UBody −0.59 vs ft），held-out 2D 不落后，**单模型、无外部专家**。" HInt 平局在新故事里是支撑证据（"特化未牺牲 held-out 泛化"）；与 H4W++ 问题意识同轴，Table 5 效率差异化直接接上。
+
+**下一步**：① **先跑**：fairbase 训满 4 epoch、逐 snapshot 评 InterHand + EHF Hands + UBody Hands → "InterHand PA vs EHF Hands"侵蚀轨迹图（headline 封面证据；若 ft 后续 epoch EHF 回升则降级为"1-epoch 侵蚀现象"，所以必须先钉死）+ 确认 7-04 三测 snapshot 归属；② T1 shape/cam 拆分不变；③ 组件消融叙事升级为"哪个组件买来抗侵蚀"——首推 posnet 换回 conv PositionNet（osx_l 暖启）+ detach off 探针（一石二鸟：测追加①的最大嫌疑簇 + 归因抗侵蚀）；④ **最佳报告点 = rotmat snapshot_0**（16.53 / EHF 15.61 / UBody 10.00 / HInt 0.481）。
+
 ## 2026-07-03
 
 ### L728（精修坐标喂 regressor）= 负结果，证伪"精修没到 regressor"判据 → decoder 坐标线判定不打闸
