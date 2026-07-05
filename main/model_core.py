@@ -150,13 +150,23 @@ class Model(nn.Module):
 
         # Body-shape T1 (default OFF): name prefixes of the two decoupled linear
         # heads inside the (otherwise frozen) body_regressor that we allow to
-        # train. Empty when cfg.train_body_shape is False -> all related logic in
-        # freeze_modules / _verify_freeze_status / save_model / optimizer is a
-        # no-op, so the hand/face path is byte-for-byte unchanged.
-        self.body_shape_trainable_prefixes = (
-            ['body_regressor.shape_out', 'body_regressor.cam_out']
-            if getattr(cfg, 'train_body_shape', False) else []
-        )
+        # train. cfg.body_shape_mode ('both'/'shape'/'cam') picks the subset for
+        # the 7-05 shape-vs-cam split ablation. Empty when cfg.train_body_shape is
+        # False -> all related logic in freeze_modules / _verify_freeze_status /
+        # save_model / optimizer is a no-op, so the hand/face path is byte-for-byte
+        # unchanged. 'both' reproduces the original T1 prefix list exactly.
+        if getattr(cfg, 'train_body_shape', False):
+            _bs_mode = getattr(cfg, 'body_shape_mode', 'both')
+            _bs_prefixes = []
+            if _bs_mode in ('both', 'shape'):
+                _bs_prefixes.append('body_regressor.shape_out')
+            if _bs_mode in ('both', 'cam'):
+                _bs_prefixes.append('body_regressor.cam_out')
+            assert _bs_prefixes, \
+                f"invalid cfg.body_shape_mode={_bs_mode!r} (expected 'both'/'shape'/'cam')"
+            self.body_shape_trainable_prefixes = _bs_prefixes
+        else:
+            self.body_shape_trainable_prefixes = []
 
         # End-tip 2D loss weighting (default OFF, no-op when both = 1.0). UBody
         # natural-hand degradation concentrates at the distal joints (tip=_4,

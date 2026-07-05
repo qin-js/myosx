@@ -148,6 +148,14 @@ class Config:
     # False every related branch is a no-op (prefixes empty) — hand/face
     # training is byte-for-byte unchanged. See docs/experiment_log.md 2026-06-25.
     train_body_shape = False
+    # body_shape_mode: which decoupled head(s) to unfreeze when train_body_shape
+    # is True — 'both' (default; = shape_out + cam_out, byte-for-byte the original
+    # T1), 'shape' (shape_out only), or 'cam' (cam_out only). Drives the 7-05
+    # shape/cam split ablation that attributes the UBody [wa] gain vs the [abs]
+    # regression (7-02 crosspath: the [abs] blow-up tracks cam_z drift, so
+    # shape-only is the hypothesised "win without breaking [abs]" variant). No-op
+    # unless train_body_shape is True.
+    body_shape_mode = 'both'
     # Decoder isolation experiment (default OFF, hand only). When True the
     # train/test1 hand path swaps our HandDecoder for the OSX-style PoseurDecoder
     # (6-layer deformable-DETR with ITERATIVE reference-point refinement, which

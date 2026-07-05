@@ -323,6 +323,10 @@ def parse_args():
                              '默认关闭，关闭时对手/脸训练零影响')
     parser.add_argument('--body_shape_lr', type=float, default=1e-5,
                         help='body-shape T1 的 shape_out/cam_out 学习率（仅 --train_body_shape 时生效）')
+    parser.add_argument('--body_shape_mode', type=str, default='both',
+                        choices=['both', 'shape', 'cam'],
+                        help='T1 shape/cam 拆分：解冻哪个头（both=shape_out+cam_out 原始 T1；'
+                             'shape=只 shape_out；cam=只 cam_out）；仅 --train_body_shape 时生效')
     parser.add_argument('--use_poseur_hand_decoder', action='store_true',
                         help='decoder 隔离实验：手部用 OSX 式 PoseurDecoder(6 层迭代精修) 替代 '
                              'HandDecoder；默认关闭=HandDecoder。train 与 test1 必须一致')
@@ -656,6 +660,7 @@ def main():
     if args.train_body_shape:
         cfg.train_body_shape = True
     cfg.body_shape_lr = args.body_shape_lr
+    cfg.body_shape_mode = args.body_shape_mode
     # Decoder isolation experiment: must be set BEFORE _make_model (get_model reads
     # cfg.use_poseur_hand_decoder to pick HandDecoder vs PoseurDecoder).
     cfg.use_poseur_hand_decoder = args.use_poseur_hand_decoder
