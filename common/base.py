@@ -371,9 +371,14 @@ class Trainer(Base):
             # [映射逻辑 1]: pytorch 路径显式跳过全新重写的模块(DCNv4/my_decoder)，
             # 让它们随机初始化。track B(normal/OSX)这些就是原生 MMCV 模块、
             # osx_l.pth.tar 含其权重 → 必须按 identity 加载当 warm-start，不跳过。
+            # 例外(探针): cfg.hand_posnet=='conv' 时 hand_position_net 是原始 conv
+            # PositionNet、key/shape 与 osx_l 手头一致 → 不跳过、走下方形状匹配暖启。
             if cfg.decoder_setting == 'pytorch':
-                if k.startswith('hand_decoder.') or k.startswith('face_decoder.') or \
-                   k.startswith('hand_position_net.') or k.startswith('face_position_net.'):
+                _skip = [k.startswith('hand_decoder.'), k.startswith('face_decoder.'),
+                         k.startswith('face_position_net.')]
+                if getattr(cfg, 'hand_posnet', 'dcnv4') != 'conv':
+                    _skip.append(k.startswith('hand_position_net.'))
+                if any(_skip):
                     skipped_keys.append(k)
                     continue
 

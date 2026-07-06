@@ -327,6 +327,12 @@ def parse_args():
                         choices=['both', 'shape', 'cam'],
                         help='T1 shape/cam 拆分：解冻哪个头（both=shape_out+cam_out 原始 T1；'
                              'shape=只 shape_out；cam=只 cam_out）；仅 --train_body_shape 时生效')
+    parser.add_argument('--hand_posnet', type=str, default='dcnv4', choices=['dcnv4', 'conv'],
+                        help='hand PositionNet 后端消融探针：dcnv4=DCNv4PositionNet(冷启)；'
+                             'conv=原始 conv PositionNet(可从 osx_l 暖启)。train 与 test 必须一致')
+    parser.add_argument('--no_detach_hand_decoder_query', action='store_true',
+                        help='关闭 detach_hand_decoder_query：让 decoder 梯度回流进 hand_position_net '
+                             '特征分支(OSX 有、我们默认 detach 掉)。conv posnet 反向稳定时安全')
     parser.add_argument('--use_poseur_hand_decoder', action='store_true',
                         help='decoder 隔离实验：手部用 OSX 式 PoseurDecoder(6 层迭代精修) 替代 '
                              'HandDecoder；默认关闭=HandDecoder。train 与 test1 必须一致')
@@ -664,6 +670,12 @@ def main():
     # Decoder isolation experiment: must be set BEFORE _make_model (get_model reads
     # cfg.use_poseur_hand_decoder to pick HandDecoder vs PoseurDecoder).
     cfg.use_poseur_hand_decoder = args.use_poseur_hand_decoder
+    # Hand PositionNet backend probe: must be set BEFORE _make_model (get_model reads
+    # cfg.hand_posnet) AND before _load_pretrained_frozen (it reads cfg.hand_posnet to
+    # decide whether to warm-start hand_position_net from osx_l).
+    cfg.hand_posnet = args.hand_posnet
+    if args.no_detach_hand_decoder_query:
+        cfg.detach_hand_decoder_query = False
 
     # Route C (gated). Must be set BEFORE _make_model builds the Model, which
     # reads cfg.train_hand_roi to move hand_roi_net into the trainable lists.

@@ -1164,7 +1164,14 @@ def get_model(mode):
 
     elif mode == 'train' or mode == "test1":
         hand_roi_net = HandRoI(feat_dim=cfg.feat_dim, upscale=cfg.upscale)
-        hand_position_net = DCNv4PositionNet('hand', feat_dim=cfg.feat_dim//2, dcnv4_group=4, num_blocks=3)
+        # Hand PositionNet backend (cfg.hand_posnet, default 'dcnv4'). 'conv' swaps in
+        # the original conv PositionNet — same (joint_hm, joint_coord, img_feat_joints)
+        # interface as DCNv4PositionNet, but its conv/hand_conv keys match osx_l so the
+        # frozen-load warm-starts it (ablation probe; see cfg.hand_posnet).
+        if getattr(cfg, 'hand_posnet', 'dcnv4') == 'conv':
+            hand_position_net = PositionNet('hand', feat_dim=cfg.feat_dim//2)
+        else:
+            hand_position_net = DCNv4PositionNet('hand', feat_dim=cfg.feat_dim//2, dcnv4_group=4, num_blocks=3)
         hand_rotation_net = HandRotationNet('hand', feat_dim=256)
         
         # Hand Decoder

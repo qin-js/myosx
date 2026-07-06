@@ -175,6 +175,14 @@ class Config:
     # ablate back toward the old coupling.
     hand_aux_coord_loss_weight = 1.0
     detach_hand_decoder_query = True
+    # Ablation probe (default 'dcnv4' = current stack, byte-for-byte unchanged).
+    # Hand PositionNet backend: 'dcnv4' = DCNv4PositionNet (cold-start: its
+    # dcnv4/proj blocks have no osx_l counterpart); 'conv' = the original conv
+    # PositionNet, whose conv/hand_conv keys+shapes match osx_l's hand head exactly
+    # so it WARM-STARTS from osx_l. Probes whether the InterHand-PA deficit (~1.2mm
+    # vs fair baseline) and whole-body erosion trace to the DCNv4 cold-start head.
+    # train & test must pass the same value (structural mismatch otherwise).
+    hand_posnet = 'dcnv4'
     # Feed the decoder's last-layer REFINED coordinate (xy) to hand_regressor
     # instead of the raw soft-argmax hand_joint_img (z stays soft-argmax — the
     # decoder only regresses 2D). Without this the coord-refiner's learned
