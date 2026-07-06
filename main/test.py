@@ -245,6 +245,8 @@ def parse_args():
                         help='hand PositionNet 后端（必须与训练该 checkpoint 时一致）：dcnv4 / conv')
     parser.add_argument('--use_poseur_hand_decoder', action='store_true',
                         help='decoder 隔离实验：手部用 PoseurDecoder 评测（必须与训练该 checkpoint 时一致）')
+    parser.add_argument('--no_refined_hand_coord', action='store_true',
+                        help='关闭 decoder refined xy 喂 hand_regressor；必须与训练 checkpoint 时一致')
     parser.add_argument('--dump_analysis', action='store_true',
                         help='额外 dump 逐样本/逐手指标到 result_dir 下的 '
                              'bootstrap_<testset>.npz 与 crosspath_<testset>.npz，'
@@ -479,6 +481,8 @@ def main():
     # before Tester._make_model (get_model('test1') reads it).
     cfg.use_poseur_hand_decoder = args.use_poseur_hand_decoder
     cfg.hand_posnet = args.hand_posnet
+    if args.no_refined_hand_coord:
+        cfg.use_refined_hand_coord = False
     cudnn.benchmark = True
     from common.base import Tester
 
