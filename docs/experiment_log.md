@@ -2,6 +2,75 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-07-06
+
+### T1 shape/cam 拆分：归因翻转（`[wa]` 杠杆=cam 非 shape）+ 红格补不上（cam 刚性耦合）→ 转干净归因分析，最终模型不含 T1
+
+`output/body_shape_t1_{shape,cam}/result/snapshot_{0,1}/`（warm-start rotmat s0、BEDLAM-only、`--no_refined_hand_coord`、`--body_shape_mode {shape,cam}`）。ep1/ep2 均平台，取 ep2：
+
+| 指标 | rotmat s0 起点 | **shape-only** | **cam-only** | 7-02 both | stock |
+|---|---:|---:|---:|---:|---:|
+| UBody `[wa]` NME | 0.231 | 0.227 (−0.004) | **0.205 (−0.026)** ✅ 反超 | 0.204 | 0.219 |
+| UBody `[abs]` NME | 0.318 | 0.335 (+0.017) | **0.362 (+0.044)** ❌ | 0.367 | 0.311 |
+| UBody `[wa]` tip | ~0.294 | 0.289 | **0.259**(<stock) | — | 0.263 |
+| EHF Face | 6.15 | **6.42 (+0.27)** ❌ | 6.15 (守) | 6.39 | 6.09 |
+| EHF Hands | 15.61 | 15.70 (退) | 15.61 (守) | — | 15.97 |
+| UBody PA Hands (3D) | 10.00 | 10.08 (退) | 10.00 (守) | — | 10.29 |
+
+**归因完全翻转（与 7-02"只训 shape"方子相反）**：`[wa]` 改善 **100% 来自 cam_out**，shape_out 对 `[wa]` 无效。
+
+- **cam-only**：一个头复现 both 全部 `[wa]` 收益（0.205≈both 0.204，反超 stock，**连 distal tip 0.259 < stock 0.263**），`[abs]` 也照崩（0.362≈both 0.367）。**手/脸 3D 全部纹丝不动**（EHF Hands 15.61 / Face 6.15 / UBody PA Hands 10.00 逐字=起点）——cam_out 只动投影平移，Procrustes 一对齐即消，3D mesh 未变 → 所有 PA-3D 指标零变化，只 2D 投影指标动。**隔离验证通过。**
+- **shape-only**：`[wa]` 几乎不动（−0.004，仍输 stock），反把 `[abs]`/EHF Face(+0.27)/EHF Hands/UBody 3D 手全弄退——betas 是全身 shape，BEDLAM 上训 → 域偏移 → 3D vertices 净退。**纯负债，应弃。**（退是 betas 全身性所致，非 bug；印证隔离正确。）
+
+**加性分解干净**：both 的三副作用 = cam(`[wa]↑`/`[abs]↓`) + shape(EHF Face↓)，每个精确归一个头。
+
+**三判断**：
+1. **`[wa]` 唯一杠杆 = cam_z 投影几何**，非手 articulation、非 shape。cam-only 连 distal 都反超 stock → **7-02"distal 天花板有一块是 body 侧几何"升级为"全部"**。
+2. **`[wa]↑` 与 `[abs]↓` 被 cam_z 刚性耦合**（同一位移两面：推远→wrist-aligned 投影尺度贴 GT 但绝对位置偏），冻结框架内 cam 头无法解耦。
+3. **shape_out 弃**（不撬 `[wa]` 且退 3D 手/脸）。
+
+**对论文（红格补不上但非灾难）**：T1 无法在不崩 `[abs]` 前提下把 `[wa]` 变绿。但 **whole-body 3D 主表口径早已全绿、不依赖 T1**（UBody PA MPVPE Hands 10.00<10.29、EHF Hands 15.61<15.97，rotmat s0 就绿）；`[wa]`/`[abs]` 是自然手 **2D 诊断指标**，不必进 whole-body 主表。→ **把纠结已久的红格换成干净分析结论**："UBody `[wa]` gap 的杠杆是 body-side cam_z 投影几何（cam-only 单头反超 OSX、含 distal），与手 articulation/betas 无关；cam_z 对 `[wa]`/`[abs]` 刚性耦合，冻结框架内无法只取其一。"
+
+**处置**：① **最终模型 = rotmat s0，不含 T1**；UBody 主表用 3D MPVPE（全绿），`[wa]`/`[abs]` 移分析节诚实标注 gap 来源。② T1 cam/shape 两 run 进 Table 4 归因行（`[wa]`=cam 几何 / `[wa]↔[abs]` 耦合 / shape 非杠杆且负债）；cam-only 0.205 反超作"body-side 上界探针"保留。③ future work 一句（不做）：约束 cam_z 只改投影尺度不改深度或可解耦，但 cam `[wa]`−0.026/`[abs]`+0.044 几乎同步 → 成功率低。④ **组件消融（posnet 换 conv + detach off 探针）现为唯一剩余实验线，主模型已定，可开跑。**
+
+## 2026-07-05
+
+### fairbase 训满 4 epoch：whole-body 侵蚀 headline 坐实、in-domain「接近追平」作废（gap ~1.2mm 且扩大）→ go/no-go 一分为二
+
+`output/osx_fairbase/result/{snapshot0,snapshot1_itr1500,snapshot1_itr3000,snapshot2,snapshot3}/`（snap0=ep1、snap2=ep3、snap3=ep4；snap1 满点缺，中途 itr1500/3000 代 ep2）。
+
+| ckpt | ~ep | InterHand PA | wrist-rel | EHF Hands PA-MPVPE | UBody PA Hands | UBody `[wa]` |
+|---|---|---:|---:|---:|---:|---:|
+| snapshot0 | 1 | 16.29 | 82.87 | 16.85 | 10.59 | 0.220 |
+| snap1_itr1500 | ~1.3 | 16.08 | 82.25 | 16.48 | 10.23 | 0.219 |
+| snap1_itr3000 | ~1.6 | 15.82 | 82.41 | 16.81 | 10.41 | 0.220 |
+| snapshot2 | 3 | 15.54 | 81.92 | 17.13 | 10.46 | 0.218 |
+| **snapshot3** | 4 | **15.36** | **81.71** | **16.72** | 10.40 | 0.218 |
+| stock OSX | — | 19.58 | 86.32 | 15.97 | 10.29 | 0.219 |
+| **我们** rotmat s0 | — | 16.53 | 85.09 | **15.61** | **10.00** | 0.231 |
+
+**两条子句分裂判定**：
+1. **whole-body 侵蚀 = 坐实（不翻案）**。EHF Hands 从 ep1(16.85) 起全程 **16.5–17.1 震荡、从不回落**（itr1500 的 16.48 是瞬时低点，下个 ckpt 弹回 16.81）；**永远回不到 stock 15.97、更够不到我们 15.61**。UBody PA Hands 全程 ~10.4，始终劣于 stock 10.29 与我们 10.00。**侵蚀在 ep1（最弱特化）即满额出现** → 不是过训晚期 artifact，堵死 reviewer"早停就没事"的反驳。翻案判据（EHF 回升 ≤15.6）**未触发**。→ **新 headline「whole-body 手部抗侵蚀」证据完整**，fairbase 侵蚀轨迹图（InterHand-PA vs EHF-Hands，ft 五点 + stock + 我们）可直接画。
+2. **in-domain「0.24mm 让步」= 作废**。ft 训满 4ep 到 **15.36 且仍在降**（ep3→ep4 −0.18，未平台）；真实 in-domain gap = 16.53−15.36 = **~1.2mm 且扩大**（外推收敛 ~15.0-15.3，结构性差 ~1.3-1.5mm）。wrist-rel 同样恶化：ft **81.71**、我们 85.09，差 **~3.4mm**。**7-04「+0.24 / 天花板≈16.5 / 结构性差 ~0.2mm」是拿我方最优点 vs ft 1-epoch 点的不公平比较，全部作废**（那三个数就地在 7-04 条目加了勘误注）。
+
+**净效果**：trade-off 叙事更干净（纯 Pareto：ft 用 InterHand+wrist-rel 换 whole-body，我们相反），但「接近追平 in-domain」**死**。措辞降级并移主轴：**headline 主轴 = whole-body（EHF/UBody/AGORA 3D 手），InterHand 定位为「手 crop 专项基准，诚实报告、非主场」**；写成「我们不为 in-domain 手 crop 基准过度特化，换 whole-body 3D 手全面优于 stock 与任意 epoch 的 ft，held-out 2D 持平；代价 = InterHand PA 诚实落后 ~1.2mm」。对 stock 仍全面赢（InterHand 16.53 vs 19.58）。
+
+**归因补强（whole-body 赢非 rotmat 带来）**：snap2（无 rotmat）EHF Hands 已 **15.67 << ft 16.85**、UBody PA Hands 10.15 < ft → **抗侵蚀主归架构 + aux/热图锚**（冻结骨干上我们手头有 image-plane 2D 监督锚，OSX decoder 无锚=死代码，见 7-04 追加①），rotmat 只是小增益（15.67→15.61 / 10.15→10.00）。这正是组件消融要拆的。
+
+**go/no-go 收口**：decoder 线数据完整，**不再需要跑 fairbase**。生死闸最终判定：**whole-body 主张成立、in-domain 追平放弃**。
+
+### T1 shape/cam 拆分：代码改动就绪（`body_shape_mode` 开关）+ 拆分实验计划
+
+**为什么先做 T1**：UBody `[wa]`（0.231 vs 0.219）是 Table 1「全绿 vs stock」的**唯一红格**（定位级）；fairbase 又印证该格对换 decoder/喂数据双免疫（ft 0.220≈stock 0.219）→ **T1 是唯一杠杆**。7-02 已见 both-T1 把 `[wa]` 推到 **0.204 反超**，只是 `[abs]` 崩 0.367 + EHF Face 退 6.39（crosspath 归因 cam_z 域偏移）。拆分 = 验证 0.204 来自 shape 还是 cam_z；shape-only 是 7-02 开的「约束 cam_z / 只训 shape」方子。组件消融放主模型冻结后一次跑（更省，且现在报告点可能因 T1 再变）。
+
+**代码改动（3 文件，默认 `both` 字节级等价，AST 通过）**：新增 `cfg.body_shape_mode ∈ {both,shape,cam}` 选解冻哪个解耦头。`config.py` 加默认 `'both'`；`model_core.py:151` 按 mode 构造 `body_shape_trainable_prefixes` 子集（both→[shape_out,cam_out] / shape→[shape_out] / cam→[cam_out]）；`train.py` 加 `--body_shape_mode`（choices 限定）→ cfg。**只改 prefix 列表构造一处**，下游四处（save_model / _verify_freeze_status / optimizer group / _check_gradient_flow）全 `startswith(prefix)` 自动跟随。`train_body_shape=False` 或 `both` 时与旧代码逐字等价 → 手/脸零影响。
+
+**两个 run（远端，warm-start `coordrefiner_rotmat/snapshot_0`、`--trainset_3d BEDLAM`（trainset_2d 默认已空=BEDLAM-only 干净 betas）、`--no_refined_hand_coord`（匹配 rotmat s0 forward，手 guardrail 才=终值）、lr 1e-5 / 2ep / phase1=end=2）**：`--body_shape_mode shape`（先跑，预期只赢不崩）/ `--body_shape_mode cam`（归因对照，预期复现 `[abs]` 崩）。warm-start 用 rotmat s0 而非 snap2：T1 body head 训练不经手部、shape-vs-cam 归因不受影响，且最终模型（手 rotmat s0 + body T1）一步到位、guardrail 即终值。
+
+**判定表**：UBody `[wa]` 保 <0.229（撬动=成功）+ `[abs]` ≈0.316 不崩（both 崩 0.367）+ EHF Face ≈6.15 不退 = **只赢不崩→红格补上、Table 1 全绿**；手 guardrail InterHand ≈16.53 / EHF Hands ≈15.61 **必须纹丝不动**（动=漏进手路径 bug）。启动见 `🔧 解冻 ~10k`(shape) / `~3k`(cam) 参数。
+
+**诚实预期**：shape-only 保 `[wa]` 且不崩 → 最终模型 = rotmat s0 + shape head，红格补上；若 shape-only 啥也不撬 → 0.204 主要来自 cam_z（必崩 `[abs]`），红格补不上、接受「全绿差一格」，cam-only run 确认该归因。**先跑 shape-only 看结果再决定 cam-only。**
+
 ## 2026-07-04
 
 ### rotmat pose loss = 对靶正结果但一个 epoch 触顶 16.53（未过闸）；aux-off 更差（"aux 抢容量"证伪）→ InterHand PA 线封口
@@ -17,6 +86,8 @@
 | snapshot_1_itr1500 | 1.3 | 16.57 | 84.70 |
 | snapshot_1_itr3000 | 1.6 | 16.55 | 84.52 |
 | snapshot_1 | 2 | 16.58 | 85.27 |
+
+⚠️ **7-05 勘误**：本节"未过闸 16.29(+0.24)"及"天花板 ≈16.5、结构性差 ~0.2mm"是拿我方最优点比 **ft 的 1-epoch 点(16.29)**——不公平。ft 训满 4ep 到 **15.36 仍在降**，真实 in-domain gap = **~1.2mm 且扩大**、wrist-rel 差 ~3.4mm。见 2026-07-05 条目。此处 16.53 的**报告价值不变**（whole-body 抗侵蚀 headline 的报告点），仅"接近追平 in-domain"的解读作废。
 
 **aux0（aux OFF）**：snapshot_0_itr1500 **16.75** → itr3000 **16.88**（在退）。
 
@@ -73,9 +144,9 @@
 2. **新赢点 = whole-body 3D 手（结构性）**。OSX-ft 仅 1 epoch hand-heavy 微调，EHF Hands 15.97→**16.85**、UBody Hands 10.29→**10.59**——拿 in-domain、丢 whole-body 的经典侵蚀（暖启特征空间整体漂向 InterHand crop 域）；我们同数据 16.53 的同时 EHF **15.61**、UBody **10.00**，两口径**均优于 stock**。**OSX-ft 沿 Pareto 前沿滑动，我们把前沿外推。** 机制假设（可消融验证）：OSX decoder 无任何 2D 锚（追加①），微调时无东西阻止特征漂移；我们的 per-layer aux 2D + posnet 热图监督即锚。
 3. **UBody `[wa]` 对"换 decoder"与"喂数据"双免疫**（ft 0.220 ≈ stock 0.219）→ 7-02 归因（body 侧 shape/cam）获第三方印证，**T1 拆分是该格唯一杠杆**。诚实项：我们 0.231 对 ft 0.220 的差距仍是 distal 签名（tip 0.294 vs 0.268、j3 0.246 vs 0.231、j1 持平）——小手末端 2D 上 OSX decoder 家族确实仍占优。
 
-**headline 改写**："hand-heavy 微调下，OSX 原生 decoder 的 in-domain 收益（16.29）以全身手部退化为代价（EHF +0.88 / UBody +0.30）；我们以 0.24mm in-domain 让步，换 whole-body 3D 手全面优于 stock 与公平基线（EHF −1.24 / UBody −0.59 vs ft），held-out 2D 不落后，**单模型、无外部专家**。" HInt 平局在新故事里是支撑证据（"特化未牺牲 held-out 泛化"）；与 H4W++ 问题意识同轴，Table 5 效率差异化直接接上。
+**headline 改写**："hand-heavy 微调下，OSX 原生 decoder 的 in-domain 收益（16.29）以全身手部退化为代价（EHF +0.88 / UBody +0.30）；我们以 0.24mm in-domain 让步，换 whole-body 3D 手全面优于 stock 与公平基线（EHF −1.24 / UBody −0.59 vs ft），held-out 2D 不落后，**单模型、无外部专家**。" HInt 平局在新故事里是支撑证据（"特化未牺牲 held-out 泛化"）；与 H4W++ 问题意识同轴，Table 5 效率差异化直接接上。（⚠️ **7-05 修正**：此表 ft 列均为 **1-epoch** 点；训满 4ep 后 InterHand→15.36 仍降、EHF Hands 稳在 16.72（不回落）。whole-body 赢**加强**、但"0.24mm 让步"作废→真实 ~1.2mm，headline 措辞降级见 2026-07-05。）
 
-**下一步**：① **先跑**：fairbase 训满 4 epoch、逐 snapshot 评 InterHand + EHF Hands + UBody Hands → "InterHand PA vs EHF Hands"侵蚀轨迹图（headline 封面证据；若 ft 后续 epoch EHF 回升则降级为"1-epoch 侵蚀现象"，所以必须先钉死）+ 确认 7-04 三测 snapshot 归属；② T1 shape/cam 拆分不变；③ 组件消融叙事升级为"哪个组件买来抗侵蚀"——首推 posnet 换回 conv PositionNet（osx_l 暖启）+ detach off 探针（一石二鸟：测追加①的最大嫌疑簇 + 归因抗侵蚀）；④ **最佳报告点 = rotmat snapshot_0**（16.53 / EHF 15.61 / UBody 10.00 / HInt 0.481）。
+**下一步**：① ~~fairbase 训满 4 epoch 出侵蚀轨迹图~~ **已完成（2026-07-05：侵蚀坐实、in-domain gap 修正为 ~1.2mm）**；② T1 shape/cam 拆分（代码就绪，见 7-05）；③ 组件消融升级为"哪个组件买来抗侵蚀"——首推 posnet 换回 conv PositionNet（osx_l 暖启）+ detach off 探针；④ **最佳报告点 = rotmat snapshot_0**（16.53 / EHF 15.61 / UBody 10.00 / HInt 0.481）。
 
 ## 2026-07-03
 

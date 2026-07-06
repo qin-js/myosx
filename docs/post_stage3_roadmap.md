@@ -36,9 +36,9 @@
 
 ### 下一步（优先级）
 
-1. **fairbase 训满 4ep + 逐 snapshot 评 InterHand+EHF Hands+UBody Hands** → 侵蚀轨迹图（headline 封面证据；先跑防翻案）+ 确认 7-04 三测 snapshot 归属（应=snapshot_0）。
-2. T1 shape/cam 拆分（不变）。
-3. 组件消融升级为"抗侵蚀归因"：首推 **posnet 换 conv PositionNet（osx_l 暖启）+ detach off** 探针；topo/occlusion 消融照旧。
+1. ~~fairbase 训满 4ep + 侵蚀轨迹图~~ **已完成（7-05）**：侵蚀坐实（EHF 全程 16.5-17.1 不回落）、in-domain gap 修正为 ~1.2mm 且扩大。
+2. ~~T1 shape/cam 拆分~~ **已完成（7-06）：判负**。`[wa]` 杠杆 100% = cam_z 投影几何（非 shape），`[wa]↑`/`[abs]↓` 被 cam_z 刚性耦合、冻结框架无法解耦（cam-only 反超 0.205 但 `[abs]` 崩 0.362；shape-only 纯负债）。红格补不上，但 whole-body 3D 主表本已全绿、不依赖 T1 → `[wa]`/`[abs]` 降为 2D 诊断；cam/shape 进 Table 4 归因行。**最终模型 = rotmat s0，不含 T1。**
+3. **组件消融（唯一剩余实验线，主模型已定，可开跑）**：升级为"抗侵蚀归因"——首推 **posnet 换 conv PositionNet（osx_l 暖启）+ detach off** 探针；topo/occlusion 消融照旧。
 4. 最佳报告点 = `coordrefiner_rotmat/snapshot_0`。
 
 ---

@@ -19,7 +19,7 @@
 | 🔍 | **诚实分析**——平手/小赢都算成功（held-out 泛化、身体不退化、效率） |
 | ⚠️ | **风险格**——训练域外（当前训 InterHand+UBody+MSCOCO），可能退化，重点盯 |
 
-**已知种子数字**（7-04 全套，报告点 = `coordrefiner_rotmat/snapshot_0`）：InterHand PA：stock **19.58** · OSX-ft **16.29**（snapshot_0=1ep，wrist-rel **82.87**）· 我们 **16.53**（wrist-rel 85.09；snap2 16.78/84.13）。**EHF Hands PA-MPVPE：stock 15.97 · ft 16.85（侵蚀）· 我们 15.61** ✅。**UBody PA MPVPE Hands：stock 10.29 · ft 10.59（侵蚀）· 我们 10.00** ✅。HInt `[all wa]`：stock 0.487 · ft **0.480** · 我们 0.481（**精确平**）。UBody `[wa]`：stock 0.219 · ft 0.220 · 我们 0.231（❌ 归 T1；T1 已 0.204 但 `[abs]` 崩，待拆分）。EHF Face：6.09/6.09/6.15。
+**已知种子数字**（7-04 全套，报告点 = `coordrefiner_rotmat/snapshot_0`）：InterHand PA：stock **19.58** · OSX-ft **16.29**（snapshot_0=1ep，wrist-rel **82.87**）· 我们 **16.53**（wrist-rel 85.09；snap2 16.78/84.13）。**EHF Hands PA-MPVPE：stock 15.97 · ft 16.85（侵蚀）· 我们 15.61** ✅。**UBody PA MPVPE Hands：stock 10.29 · ft 10.59（侵蚀）· 我们 10.00** ✅。HInt `[all wa]`：stock 0.487 · ft **0.480** · 我们 0.481（**精确平**）。UBody `[wa]`：stock 0.219 · ft 0.220 · 我们 0.231（自然手 2D **诊断**指标，非主表；**7-06 T1 判负**：`[wa]` 杠杆=cam_z 几何、`[wa]↔[abs]` 刚性耦合、shape 非杠杆，不可补绿，转诊断）。EHF Face：6.09/6.09/6.15。
 
 ---
 
@@ -35,7 +35,7 @@ testset = **EHF + UBody**；列 = MPVPE / PA-MPVPE 的 (all / hands / face)
 
 - **body 部分是隐藏王牌**：冻结骨干 ⇒ 身体逐比特≈OSX ⇒ 写"几乎相同"，当"可证明不破坏身体"的卖点，不是输赢。
 - **EHF hands = ⚠️→✅（7-04 解除并升级为 headline 格）**：我们 **15.61** 优于 stock 15.97，且公平基线 ft 侵蚀到 **16.85**——EHF/UBody hands 两格现在是新 headline「whole-body 抗侵蚀」的正面战场，配 fairbase 侵蚀轨迹图（fairbase 训满 4ep 逐 snapshot 评，待跑）。
-- **7-02 更新**：UBody hands `[wa]` 格有了 body 侧杠杆——T1 已做到 **0.204 反超 OSX 0.219**，但原样伴随 `[abs]` 0.367 崩 + EHF Face 6.39，**须等 shape/cam 拆分消融拿到"只赢不崩"版本才能上表**；`[abs]` 与 EHF Face 因此升级为**受监护格**（任何 T1 变体上表前必须核）。7-04 补：fairbase `[wa]` 0.220≈stock → 该格对换 decoder/喂数据双免疫，T1 是唯一杠杆。AGORA 现可测（`--testset AGORA`），可作 Table 1 附加列（T1 在 AGORA PA 全线小赢）。
+- **7-02/7-06 更新（T1 判负）**：UBody hands `[wa]` 曾寄望 body 侧 T1 补绿——**7-06 shape/cam 拆分证伪**：`[wa]` 杠杆 100% 是 cam_z 投影几何（shape 无效且负债），而 cam_z 让 `[wa]↑`/`[abs]↓` **刚性耦合**（cam-only `[wa]` 0.205 反超 stock 但 `[abs]` 0.362 崩），冻结框架无法解耦。**结论：`[wa]`/`[abs]` 不进 whole-body 主表**（本表 hands 列用 3D **PA-MPVPE**，已全绿：UBody 10.00<10.29、EHF 15.61<15.97，不依赖 T1）；`[wa]`/`[abs]` 移**分析节 + Table 4 归因行**，诚实写"gap=body-side cam 几何、非手 articulation"。AGORA 可作 Table 1 附加列。
 
 ## Table 2 — 手部专项表（核心战场 / 生死闸）
 testset = **InterHand26M (+ HIC 若有)**；列 = MPJPE / MPVPE / MRRPE（per-hand root+scale 对齐，IntagHand 协议）
@@ -78,6 +78,16 @@ testset = **HInt（NewDays/VISOR/Ego4D 子集）+ HAA500**；2D PCK 类指标
 - decoder 层数 3 vs 6（仅当上两项有信号再跑）；
 - 有/无 每层 aux 坐标监督【已有 aux0 数据，⚠️ confound：关 loss 后 bbox_embed 仍无监督迭代参考点，只证"有机制必须配监督"，写表时措辞按"机制内必要性"】；
 - 有/无 迭代参考点（vs 固定 `coord_init`）【已有 gate vs snap2 数据：对 PA≈0、对 2D 为正】。
+
+**UBody `[wa]` 归因小表（body-side 诊断，非 decoder 消融；7-06 T1 拆分数据）**——回答"自然手 `[wa]` gap 是手 articulation 还是 body 几何"：
+
+| 行 | UBody `[wa]` | `[abs]` | EHF Face | 3D 手(守?) | 判读 |
+|---|---:|---:|---:|---|---|
+| rotmat s0（=最终模型） | 0.231 | 0.318 | 6.15 | — | 起点 |
+| + shape-only | 0.227 | 0.335 | 6.42 | ❌退 | shape 不撬 `[wa]`、还退 3D（betas 全身性）→ 非杠杆 |
+| + cam-only | **0.205** | **0.362** | 6.15 | ✅守 | `[wa]` 全收益来自 cam_z；但 `[abs]` 刚性同崩 |
+
+- 一句话结论：**`[wa]` gap = body-side cam_z 投影几何**（cam-only 单头反超 stock、连 distal tip 0.259<0.263），**与手 articulation、betas 无关**；cam_z 对 `[wa]`/`[abs]` 刚性耦合，冻结框架无法只取其一 → 故不将 `[wa]` 作为要赢的主表格，改作诚实诊断。这条同时消解了 6-27~7-02 反复纠结的"自然手退化归因"。
 
 ## Table 5 — 效率表（对 H4W++ 的差异化武器）
 | 行 | #Params | FLOPs | FPS | 需要外部专家? |
