@@ -73,7 +73,7 @@ testset = **HInt（NewDays/VISOR/Ego4D 子集）+ HAA500**；2D PCK 类指标
 | **(f)** | 完整模型（rotmat snapshot_0） | 终值 |
 
 **组件内消融**（各一小表；7-04 起核心问题从"为什么追不上 16.29"升级为"**哪个组件买来抗侵蚀**"——假设：aux 2D+热图监督是抗漂移锚，OSX decoder 无锚故 whole-body 漂移）：
-- **posnet：DCNv4 vs conv PositionNet（osx_l 暖启）± detach**——**7-08 Run B（conv+no_detach，fresh）已跑前 3ep：抗侵蚀=aux 锚（锁死）**。Run B 与 fairbase 几乎只差 decoder（都 conv/fresh/梯度回流），Run B **不侵蚀**（EHF Hands 15.86~15.95<15.97、UBody 10.05~10.08<10.29）、fairbase 侵蚀 → 抗侵蚀非 DCNv4 头/非暖启，**唯一剩 aux 锚**（可写方法节机制论证）。InterHand 侧 conv 冷启 3ep 仍 16.98（非 posnet 主因，待 **Run A** dcnv4 fresh 锁死单变量）。
+- **posnet：DCNv4 vs conv PositionNet（osx_l 暖启）± detach**——**7-08 Run B（conv+no_detach，fresh）已跑前 3ep：抗侵蚀=aux 锚（锁死）**。Run B 与 fairbase 几乎只差 decoder（都 conv/fresh/梯度回流），Run B **不侵蚀**（EHF Hands 15.86~15.95<15.97、UBody 10.05~10.08<10.29）、fairbase 侵蚀 → 抗侵蚀非 DCNv4 头/非暖启，**唯一剩 aux 锚**（可写方法节机制论证）。**7-08 Run A（dcnv4+detach，fresh）已跑：归因②锁死**——dcnv4 fresh 17.38 ≈ conv fresh 17.02（且略差 0.36mm），换哪个 posnet 都够不着 fairbase 15-16、InterHand 落后是 decoder 家族天花板+预训练本钱非 posnet；Run A/B/rotmat s0 覆盖 `{conv,dcnv4}×{detach,no_detach}×{fresh,warm}` 全不侵蚀 → 归因①升级为跨配置云鲁棒。**bonus：dcnv4>conv（略差）→ DCNv4 头疑似过度设计**，配 topo/occ 讲"特化模块未必值"。
 - **有/无 topo/occlusion 模块**（`my_decoder.py` `HandDecoderLayer`，**开关已落地待跑**：`cfg.hand_decoder_topo_occ`，train/test `--no_hand_decoder_topo_occ`；off = 换成一个干净标准 self-attn = OSX 式层，隔离特化模块净贡献）。必跑：方法节存在性论证 + 简化方向 + 堵 reviewer 过度设计质疑；建议 conv+fresh 与 Run B/fairbase 组 decoder 阶梯，**必看 EHF/UBody**——与抗侵蚀归因耦合，砍后若侵蚀则削弱"纯 aux 锚"（则表述收敛为"aux 锚+特化模块"）；
 - decoder 层数 3 vs 6（**条件项**：posnet 已无信号 → 除非 topo/occ 出信号否则不跑；**decoder 改进线 7-08 收口**，落后是天花板非容量，不加深）；
 - 有/无 每层 aux 坐标监督【已有 aux0 数据，⚠️ confound：关 loss 后 bbox_embed 仍无监督迭代参考点，只证"有机制必须配监督"，写表时措辞按"机制内必要性"】；

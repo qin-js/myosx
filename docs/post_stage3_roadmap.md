@@ -38,7 +38,7 @@
 
 1. ~~fairbase 训满 4ep + 侵蚀轨迹图~~ **已完成（7-05）**：侵蚀坐实（EHF 全程 16.5-17.1 不回落）、in-domain gap 修正为 ~1.2mm 且扩大。
 2. ~~T1 shape/cam 拆分~~ **已完成（7-06）：判负**。`[wa]` 杠杆 100% = cam_z 投影几何（非 shape），`[wa]↑`/`[abs]↓` 被 cam_z 刚性耦合、冻结框架无法解耦（cam-only 反超 0.205 但 `[abs]` 崩 0.362；shape-only 纯负债）。红格补不上，但 whole-body 3D 主表本已全绿、不依赖 T1 → `[wa]`/`[abs]` 降为 2D 诊断；cam/shape 进 Table 4 归因行。**最终模型 = rotmat s0，不含 T1。**
-3. **组件消融（抗侵蚀归因）**：**posnet 探针 Run B（conv + no_detach）已跑前 3ep → 抗侵蚀=aux 锚（锁死）**：Run B 与 fairbase 几乎只差 decoder（都 conv/fresh/梯度回流），Run B 不侵蚀（EHF 15.86~15.95）、fairbase 侵蚀 → 唯一剩 aux 锚。剩余：**Run A**（`--hand_posnet dcnv4` fresh，零代码，锁死"InterHand 落后非 posnet"）+ **topo/occ 消融**（需改代码，conv+fresh 组 decoder 阶梯，必看 EHF/UBody——与抗侵蚀归因耦合）。
+3. **组件消融（抗侵蚀归因）**：**posnet 探针 Run B（conv+no_detach）+ Run A（dcnv4+detach）已跑 → 归因①②双锁死**：Run B/A 与 fairbase 几乎只差 decoder，Run B/A 均不侵蚀（EHF 15.86~15.95 / 15.88）、fairbase 侵蚀 → 抗侵蚀唯一剩 aux 锚（跨 `{conv,dcnv4}×{detach,no_detach}×{fresh,warm}` 全配置鲁棒）；InterHand 侧 conv 17.02≈dcnv4 17.38（略差）→ 落后非 posnet、是 decoder 家族天花板。剩余：**topo/occ 消融**（开关已落地待跑，conv+fresh 组 decoder 阶梯，必看 EHF/UBody——与抗侵蚀归因耦合）+ Run B 跑完 ep4 补终值。
 4. 最佳报告点 = `coordrefiner_rotmat/snapshot_0`。
 5. **decoder 改进线收口（7-08）**：不再加东西追 InterHand（含加深层数）——天花板问题非容量问题（冻结骨干=同特征=OSX 天花板 / rotmat 触顶 16.5 / posnet 换 conv 不动 / 坐标机制正交，refined on/off 评测数字不变=第三证据）；decoder 剩余只有消融、无改进。
 6. **能力边界（7-08）**：「全面超过 OSX」结构上不可能（body 冻结只能平、UBody 2D=body 几何、InterHand↔whole-body 是 Pareto trade-off 打不破）；论文主张固定 =「不破坏 whole-body、不挂外部专家，占据 OSX-ft 换不到的 Pareto 点」，非弱点。

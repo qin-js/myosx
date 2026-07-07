@@ -4,7 +4,7 @@
 
 ## 2026-07-08
 
-### posnet 探针 Run B（conv+no_detach）：抗侵蚀=aux 锚（锁死）+ InterHand 落后非 posnet（待 Run A）；refined 评测一致性；decoder 改进线收口 + 能力边界
+### posnet 探针 Run B（conv+no_detach）+ Run A（dcnv4+detach）：抗侵蚀=aux 锚（锁死）+ InterHand 落后非 posnet（锁死）；refined 评测一致性；decoder 改进线收口 + 能力边界
 
 **① refined 评测一致性（先修的坑）**：test.py 之前**缺** `--no_refined_hand_coord` flag（train.py 有），评测恒走默认 `use_refined_hand_coord=True`，而 rotmat s0/T1/探针都是 `False`（soft-argmax）训的 → train/test forward mismatch。已补 test.py flag。**但实测 rotmat s0 加 flag 前后数字纹丝不动** → 原因：`use_refined_hand_coord` 只改喂 regressor 的**坐标**（占输入 2/515），且 `bbox_embed` 零初始化使精修 xy≈soft-argmax xy，而 3D PA 几乎不吃坐标输入。**含义**：(a) 底座数字 16.53/15.61/10.00 **不是 mismatch 产物、可放心用**；(b) 这是「2D 坐标机制与 InterHand 3D-PA 近正交」的**第三个独立证据**（前两个 = gate≈snap2、L728 负），且比之前更硬（连喂不喂精修坐标进 regressor 都不动 PA）；(c) T1/gate/aux0 同机制、大概率也不受污染，不必全部重测。与 7-03 L728（refined 训 refined 测退 0.25）不矛盾——L728 是**续训**让 regressor 适应新输入放大差异，纯评测切换不重训则≈0。
 
@@ -21,7 +21,7 @@
 
 **归因①（锁死）：whole-body 抗侵蚀 = decoder 的 aux 坐标锚。** Run B 与 fairbase 现在**几乎只差 decoder 一个变量**（都 conv PositionNet、都 osx_l fresh 冷启、都梯度回流 no_detach、同数据）——唯一差异 = 我们 HandDecoder（每层 aux 2D 坐标监督）vs OSX PoseurDecoder（无锚、死代码）。结果 **Run B EHF Hands 15.86~15.95(<stock 15.97) / UBody 10.05~10.08(<10.29) 不侵蚀**，fairbase 侵蚀。→ 抗侵蚀**不来自 DCNv4 头**（Run B 已换成 conv）、**不来自暖启**（都 fresh），唯一剩下就是 **aux 锚**。机制假设从「假设」升级为「单变量实验结论」，可直接写方法节。
 
-**归因②（倾向，待 Run A 锁死）：InterHand 落后 ~1.2mm 非 posnet 后端。** conv posnet（可暖启+梯度回流，最接近 OSX 手部栈）冷启 3ep 到 **16.98，无逼近 15.x 迹象**——换掉 DCNv4 没解决落后。confound：Run B fresh 冷启 vs rotmat s0 暖启，绝对值不可直比。**需 Run A（`--hand_posnet dcnv4` fresh 同 recipe）** 作干净单变量：Run A≈Run B → posnet 无关、落后是 decoder 家族天花板；Run A≪Run B → posnet 有关（低概率）。Run A **零代码**（flag 已加）。
+**归因②（倾向，待 Run A 锁死）：InterHand 落后 ~1.2mm 非 posnet 后端。** conv posnet（可暖启+梯度回流，最接近 OSX 手部栈）冷启 3ep 到 **16.98，无逼近 15.x 迹象**——换掉 DCNv4 没解决落后。confound：Run B fresh 冷启 vs rotmat s0 暖启，绝对值不可直比。**需 Run A（`--hand_posnet dcnv4` fresh 同 recipe）** 作干净单变量：Run A≈Run B → posnet 无关、落后是 decoder 家族天花板；Run A≪Run B → posnet 有关（低概率）。Run A **零代码**（flag 已加）。**→ Run A 已跑（见本日下方 Run A 条目）：dcnv4 fresh 17.38 ≈ conv fresh 17.02、且略差 → 归因②锁死，落后非 posnet。**
 
 旁证：Run B `[wa]` 0.229~0.230 ≈ rotmat s0(dcnv4) 0.231 ≈ stock 0.219 略输 → `[wa]` 对 conv/dcnv4 手分支配置都不敏感，再证 T1 结论（`[wa]`=body cam 几何）。
 
@@ -30,6 +30,27 @@
 **④ 能力边界（战略，回答"能否全面超过 OSX"）：结构上不可能，且这是论文立足点非弱点。** (a) **body 冻结=逐比特 OSX → 只能平不可能超**；**UBody `[wa]`/`[abs]` 2D = body cam 几何**、**EHF Face = face 分支** → 均非 hand decoder 可碰。(b) 手部维度：**vs stock 已全超**（rotmat s0 手部全绿）；**vs 公平基线是 Pareto trade-off 打不破**——ft 占 in-domain 端（15.36，侵蚀 whole-body 换来）、我们占 whole-body 端，冻结骨干+同特征下无法同占前沿两端。(c) 真要全超需**解冻骨干**（另一个项目、打不过 SMPLer-X）或**外挂 WiLoR**（变 H4W++、弃单模型卖点）——都推翻定位。→ 论文主张固定为「**不破坏 whole-body、不挂外部专家，占据 OSX-ft 换不到的 Pareto 点**」，不追"全超"。
 
 **下一步**：① Run A（零成本、后台跑，补归因②单变量）；② topo/occ 消融（更高价值：上游决策 + 简化方向 + 堵 reviewer 过度设计质疑；**需改代码**加开关，建议设计成 conv+fresh 与 Run B/fairbase 组 decoder 阶梯，且**必看 EHF/UBody**——它与抗侵蚀归因耦合，砍后若侵蚀则削弱"纯 aux 锚"论证）；③ Run B 跑完 ep4 补终值。
+
+### Run A（dcnv4+detach，fresh）：归因②锁死（InterHand 落后≠posnet）+ 归因①跨配置云加固
+
+`output/probe_posnet_dcnv4`（`--hand_posnet dcnv4`、detach ON、osx_l fresh 冷启；主栈 dcnv4+detach 的 fresh 孪生）。Run A/B 取同 epoch snapshot_1(≈ep2)：
+
+| run | posnet | detach | init | rotmat | InterHand PA | wrist-rel | EHF Hands | UBody PA Hands | `[wa]` |
+|---|---|---|---|---|---:|---:|---:|---:|---:|
+| **Run A(本次)** | dcnv4 | on | fresh | off | **17.38** | 85.40 | 15.88 | 10.01 | 0.231 |
+| Run B | conv | off | fresh | off | 17.02 | 85.19 | 15.86 | 10.05 | 0.230 |
+| rotmat s0(主栈) | dcnv4 | on | warm | on | 16.53 | 85.09 | 15.61 | 10.00 | 0.231 |
+| fairbase(OSX dec) | conv | — | fresh | off | 16.29→15.36 | →81.71 | **16.7~16.85 侵蚀** | **10.4~10.6 侵蚀** | 0.220 |
+
+（Run A snapshot_0 EHF Hands 16.17→snapshot_1 15.88；EHF Face 7.03/7.31=face 分支 fresh 没训熟，忽略。）
+
+**归因②锁死：InterHand 落后 ~1.2mm ≠ posnet 后端。** dcnv4 fresh(17.38) 与 conv fresh(17.02) 都在 ~17 平台、都够不着 fairbase 15-16 轨迹 → 换哪个 posnet 都救不了 InterHand；且 **dcnv4 比 conv 还略差 0.36mm**，方向上排除"DCNv4 头藏了 InterHand 收益"。落后 = decoder 家族天花板 + 预训练本钱。⚠️confound：Run A vs Run B 的 detach 也翻了(两变量)，非教科书单变量——但 **Run A vs rotmat s0 同为 dcnv4+detach**，17.38(fresh)→16.53(warm+rotmat)，那 0.85mm 来自暖启+rotmat 非 posnet；整片配置云 16.5~17.4 无一近 15.x，归因②多切面稳，不必再补 dcnv4+no_detach。
+
+**归因①加固（跨配置云）：** Run A（dcnv4+detach+fresh）EHF Hands 15.88<15.97、UBody 10.01<10.29 **不侵蚀**。至此 Run A/Run B/rotmat s0 覆盖 `{conv,dcnv4}×{detach,no_detach}×{fresh,warm}×{rotmat on/off}` 全组合**全部不侵蚀**、唯 fairbase 侵蚀 → 抗侵蚀对手分支所有配置免疫、只由 aux 锚决定，机制论证从"单变量结论"升级为"跨 4 维配置云鲁棒"。
+
+**bonus（Table 4 posnet 行）：DCNv4 头疑似过度设计**——同 epoch dcnv4(17.38)>conv(17.02)、无 InterHand 好处反略负；配 topo/occ 一起讲"特化模块未必值"。`[wa]` 0.231=rotmat s0≈stock 再证 T1（`[wa]`=body cam 几何）。
+
+**净效果：探针线封口。** 归因①②双双收尾，剩余仅 topo/occ 消融（简化方向）+ Run B 跑完 ep4 补终值。
 
 ### topo/occ 消融开关已落地（待跑）
 
