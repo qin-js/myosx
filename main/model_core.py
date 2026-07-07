@@ -1206,6 +1206,7 @@ def get_model(mode):
                 n_points=4,
                 num_joints=cfg.hand_pos_joint_num,    # 通常 20
                 feat_channels=neck_channels,               # ROI 特征通道 (如 768)
+                use_topo_occ=getattr(cfg, 'hand_decoder_topo_occ', True),
             )
 
     # 3. Face

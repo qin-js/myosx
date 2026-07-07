@@ -243,6 +243,8 @@ def parse_args():
                         help='只评估前 N 个 batch（快速查看用）；<=0 表示评估整个 testset')
     parser.add_argument('--hand_posnet', type=str, default='dcnv4', choices=['dcnv4', 'conv'],
                         help='hand PositionNet 后端（必须与训练该 checkpoint 时一致）：dcnv4 / conv')
+    parser.add_argument('--no_hand_decoder_topo_occ', action='store_true',
+                        help='HandDecoder 去 topo/occ 消融（必须与训练该 checkpoint 时一致）')
     parser.add_argument('--use_poseur_hand_decoder', action='store_true',
                         help='decoder 隔离实验：手部用 PoseurDecoder 评测（必须与训练该 checkpoint 时一致）')
     parser.add_argument('--no_refined_hand_coord', action='store_true',
@@ -481,6 +483,8 @@ def main():
     # before Tester._make_model (get_model('test1') reads it).
     cfg.use_poseur_hand_decoder = args.use_poseur_hand_decoder
     cfg.hand_posnet = args.hand_posnet
+    if args.no_hand_decoder_topo_occ:
+        cfg.hand_decoder_topo_occ = False
     if args.no_refined_hand_coord:
         cfg.use_refined_hand_coord = False
     cudnn.benchmark = True

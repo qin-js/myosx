@@ -2,6 +2,50 @@
 
 本文件按时间追加实验结果和决策。只写结论、关键数字、下一步，不放长篇排查过程。
 
+## 2026-07-08
+
+### posnet 探针 Run B（conv+no_detach）：抗侵蚀=aux 锚（锁死）+ InterHand 落后非 posnet（待 Run A）；refined 评测一致性；decoder 改进线收口 + 能力边界
+
+**① refined 评测一致性（先修的坑）**：test.py 之前**缺** `--no_refined_hand_coord` flag（train.py 有），评测恒走默认 `use_refined_hand_coord=True`，而 rotmat s0/T1/探针都是 `False`（soft-argmax）训的 → train/test forward mismatch。已补 test.py flag。**但实测 rotmat s0 加 flag 前后数字纹丝不动** → 原因：`use_refined_hand_coord` 只改喂 regressor 的**坐标**（占输入 2/515），且 `bbox_embed` 零初始化使精修 xy≈soft-argmax xy，而 3D PA 几乎不吃坐标输入。**含义**：(a) 底座数字 16.53/15.61/10.00 **不是 mismatch 产物、可放心用**；(b) 这是「2D 坐标机制与 InterHand 3D-PA 近正交」的**第三个独立证据**（前两个 = gate≈snap2、L728 负），且比之前更硬（连喂不喂精修坐标进 regressor 都不动 PA）；(c) T1/gate/aux0 同机制、大概率也不受污染，不必全部重测。与 7-03 L728（refined 训 refined 测退 0.25）不矛盾——L728 是**续训**让 regressor 适应新输入放大差异，纯评测切换不重训则≈0。
+
+**② 探针 Run B（`--hand_posnet conv --no_detach_hand_decoder_query`，osx_l fresh 冷启，前 3 epoch）**：
+
+| ckpt | ~ep | InterHand PA | wrist-rel | EHF Hands | UBody PA Hands | UBody `[wa]` |
+|---|---|---:|---:|---:|---:|---:|
+| snapshot_1 | 2 | 17.02 | 85.19 | 15.86 | 10.05 | 0.230 |
+| snapshot_2 | 3 | 16.98 | 85.00 | 15.95 | 10.08 | 0.229 |
+| 参照 fairbase(OSX dec) | — | 16.29→15.36 | →81.71 | **16.7~16.85(侵蚀)** | **10.4~10.6(侵蚀)** | 0.220 |
+| 参照 rotmat s0(dcnv4,暖) | — | 16.53 | 85.09 | 15.61 | 10.00 | 0.231 |
+
+（EHF Face 9.49 是 face 分支 fresh 冷启没训熟，与探针无关，忽略。）
+
+**归因①（锁死）：whole-body 抗侵蚀 = decoder 的 aux 坐标锚。** Run B 与 fairbase 现在**几乎只差 decoder 一个变量**（都 conv PositionNet、都 osx_l fresh 冷启、都梯度回流 no_detach、同数据）——唯一差异 = 我们 HandDecoder（每层 aux 2D 坐标监督）vs OSX PoseurDecoder（无锚、死代码）。结果 **Run B EHF Hands 15.86~15.95(<stock 15.97) / UBody 10.05~10.08(<10.29) 不侵蚀**，fairbase 侵蚀。→ 抗侵蚀**不来自 DCNv4 头**（Run B 已换成 conv）、**不来自暖启**（都 fresh），唯一剩下就是 **aux 锚**。机制假设从「假设」升级为「单变量实验结论」，可直接写方法节。
+
+**归因②（倾向，待 Run A 锁死）：InterHand 落后 ~1.2mm 非 posnet 后端。** conv posnet（可暖启+梯度回流，最接近 OSX 手部栈）冷启 3ep 到 **16.98，无逼近 15.x 迹象**——换掉 DCNv4 没解决落后。confound：Run B fresh 冷启 vs rotmat s0 暖启，绝对值不可直比。**需 Run A（`--hand_posnet dcnv4` fresh 同 recipe）** 作干净单变量：Run A≈Run B → posnet 无关、落后是 decoder 家族天花板；Run A≪Run B → posnet 有关（低概率）。Run A **零代码**（flag 已加）。
+
+旁证：Run B `[wa]` 0.229~0.230 ≈ rotmat s0(dcnv4) 0.231 ≈ stock 0.219 略输 → `[wa]` 对 conv/dcnv4 手分支配置都不敏感，再证 T1 结论（`[wa]`=body cam 几何）。
+
+**③ decoder 改进线收口（战略）**：**不再往 decoder 加东西追 InterHand（含加深层数）**。四条证据表明 InterHand 落后是**天花板问题非容量问题**：冻结骨干逐比特=OSX → 同一份特征 → OSX≈天花板；rotmat（pose 空间对靶杠杆）触顶 16.5、ep1 平台（回归非欠训）；Run B 换 conv 也不动；坐标机制正交（①）。加深还与「高效单模型」定位相悖 + 重引 DCNv4 深层冷启 NaN 风险（7-01）。**decoder 剩余工作只有消融（解释）、无改进（追指标）**。「层数 3v6」按 paper_table 本就是条件项（posnet/topo-occ 有信号才跑），posnet 已无信号 → 除非 topo/occ 出信号否则不跑。
+
+**④ 能力边界（战略，回答"能否全面超过 OSX"）：结构上不可能，且这是论文立足点非弱点。** (a) **body 冻结=逐比特 OSX → 只能平不可能超**；**UBody `[wa]`/`[abs]` 2D = body cam 几何**、**EHF Face = face 分支** → 均非 hand decoder 可碰。(b) 手部维度：**vs stock 已全超**（rotmat s0 手部全绿）；**vs 公平基线是 Pareto trade-off 打不破**——ft 占 in-domain 端（15.36，侵蚀 whole-body 换来）、我们占 whole-body 端，冻结骨干+同特征下无法同占前沿两端。(c) 真要全超需**解冻骨干**（另一个项目、打不过 SMPLer-X）或**外挂 WiLoR**（变 H4W++、弃单模型卖点）——都推翻定位。→ 论文主张固定为「**不破坏 whole-body、不挂外部专家，占据 OSX-ft 换不到的 Pareto 点**」，不追"全超"。
+
+**下一步**：① Run A（零成本、后台跑，补归因②单变量）；② topo/occ 消融（更高价值：上游决策 + 简化方向 + 堵 reviewer 过度设计质疑；**需改代码**加开关，建议设计成 conv+fresh 与 Run B/fairbase 组 decoder 阶梯，且**必看 EHF/UBody**——它与抗侵蚀归因耦合，砍后若侵蚀则削弱"纯 aux 锚"论证）；③ Run B 跑完 ep4 补终值。
+
+### topo/occ 消融开关已落地（待跑）
+
+`HandDecoderLayer` 加 `use_topo_occ`（`cfg.hand_decoder_topo_occ`，默认 True 字节级不变）：**off** = 去掉 `HandTopologyAttention`+`ImplicitOcclusionModule`，换成**一个干净标准 `nn.MultiheadAttention` 自注意力**（= OSX 式 self-attn+deformable+FFN 层）。对照选"换成干净 self-attn"而非"整个删"，是为了隔离**特化模块净贡献**（而非"有没有 self-attention"）。CLI：train `--no_hand_decoder_topo_occ` / test `--no_hand_decoder_topo_occ`（**train/test 必须一致**，结构不同否则加载失败）。改动 5 文件（config/my_decoder/model_core/train/test），on 路径创建顺序不变→RNG 一致→逐比特 no-op；`ast.parse` 全过，torch 前向 smoke 待起训机验证。
+
+**待跑 probe（conv+fresh，与 Run B/fairbase 组 decoder 复杂度阶梯，必测 EHF/UBody）**：
+```bash
+cd main && python train.py --gpu_ids 0 --lr 5e-5 --lr_mult 0.1 \
+  --train_batch_size 64 --num_thread 8 --end_epoch 4 --phase1_epochs 2 \
+  --exp_name output/probe_no_topo_occ \
+  --pretrained_model_path ../pretrained_models/osx_l.pth.tar \
+  --encoder_setting osx_l --decoder_setting pytorch --grad_clip 1.0 \
+  --hand_posnet conv --no_detach_hand_decoder_query --no_hand_decoder_topo_occ
+```
+判读：砍后 EHF/UBody **不侵蚀** → topo/occ 对抗侵蚀无贡献、可安全简化（"纯 aux 锚"论证不受损，方法更干净）；砍后**侵蚀** → topo/occ 也参与抗漂移，"纯 aux 锚"表述需收敛为"aux 锚 + 特化模块"。InterHand 侧则回答特化模块对 in-domain 是否有 signal（有→触发条件项"层数 3v6"）。
+
 ## 2026-07-06
 
 ### T1 shape/cam 拆分：归因翻转（`[wa]` 杠杆=cam 非 shape）+ 红格补不上（cam 刚性耦合）→ 转干净归因分析，最终模型不含 T1

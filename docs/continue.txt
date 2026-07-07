@@ -19,7 +19,9 @@
 
 - **7-06：T1 shape/cam 拆分定论——归因翻转、红格补不上、转分析。** 拆分结果（warm rotmat s0）：**`[wa]` 改善 100% 来自 cam_out，不是 shape**（7-02"只训 shape"方子证伪）。**cam-only** 一头复现全部收益：`[wa]` 0.231→**0.205 反超 stock 0.219**（连 distal tip 0.259<0.263），但 `[abs]` 崩 0.362、手/脸 3D 全守（隔离干净）。**shape-only** 纯负债：`[wa]` 不动（0.227）、`[abs]`/EHF Face(6.42)/3D 手全退。→ **三判断**：`[wa]` 唯一杠杆=cam_z 投影几何（非手 articulation、非 shape；7-02"distal 一块是 body 几何"升级为"全部"）；`[wa]↑`/`[abs]↓` 被 cam_z **刚性耦合**、冻结框架无法解耦；shape_out 弃。**红格补不上，但 whole-body 3D 主表早已全绿（PA MPVPE Hands 10.00<10.29、EHF 15.61<15.97，不依赖 T1）** → `[wa]`/`[abs]` 降为 2D 诊断、诚实标注 gap=body cam 几何。**最终模型=rotmat s0 不含 T1**；cam/shape 两 run 进 Table 4 归因行。**组件消融为唯一剩余实验线，可开跑。** 详见 experiment_log.md 2026-07-06。
 
-更新时间：2026-07-06
+- **7-08：posnet 探针 Run B 结果 + decoder 线全面收口。** ① **抗侵蚀=aux 锚（锁死）**：Run B（conv posnet + no_detach + fresh）与 fairbase **几乎只差 decoder 一个变量**（都 conv/fresh/梯度回流），Run B EHF Hands **15.86~15.95 不侵蚀**、fairbase 侵蚀 → 抗侵蚀不来自 DCNv4 头/暖启，**唯一剩下 = 我们 decoder 的 aux 坐标锚**。机制假设升级为单变量结论、可写方法节。② **InterHand 落后非 posnet（倾向，待 Run A）**：conv 冷启 3ep 仍 16.98、无逼近 15.x 迹象；需 Run A（dcnv4 fresh，零代码）锁死单变量。③ **refined 评测一致性**：test.py 补 `--no_refined_hand_coord`（codex 已改），但 rotmat s0 加 flag 前后**数字不变** → 底座 16.53/15.61/10.00 非 mismatch 产物、放心用；且这是「2D 坐标机制与 3D-PA 正交」**第三个独立证据**。④ **decoder 改进线收口**：不再加东西追 InterHand（含加深层数）——天花板问题非容量问题（冻结骨干=同特征=OSX 天花板 / rotmat 触顶 16.5 / posnet 无关 / 坐标正交）；decoder 剩余只有消融、无改进。⑤ **能力边界**：「全面超过 OSX」结构上不可能（body 冻结只能平、UBody 2D=body 几何、InterHand↔whole-body 是 Pareto trade-off），且这是论文立足点非弱点。详见 experiment_log.md 2026-07-08。
+
+更新时间：2026-07-08
 
 这个文件只保留重开会话时必须先看的信息。完整项目总览见
 `docs/project_overview.md`，按时间的实验记录见 `docs/experiment_log.md`，路线判断见
@@ -61,7 +63,9 @@ InterHand **16.53**(ft 16.29 ❌) / wrist-rel 85.09(ft 82.87 ❌) / **EHF Hands 
 
 **B.（现主线）headline = whole-body 手部抗侵蚀 + 高效 recipe + 消融:**
 3. **headline = whole-body 3D 手（对公平基线的赢）**：OSX-ft 拿 in-domain 的代价 = EHF Hands 15.97→**16.72~17.13**、UBody Hands 10.29→~**10.4**——hand-heavy 微调经典侵蚀（7-05 fairbase 4ep 坐实：从 ep1 起不回落）；我们 16.53 的同时 EHF **15.61**、UBody **10.00**，两口径均优 stock+任意 epoch ft。写成「不为 in-domain 手 crop 基准过度特化 ↔ whole-body 全面赢，单模型无外部专家」，对位 H4W++。**HInt 降级为支撑证据**（0.480 精确平）。**诚实项**：in-domain 落后公平基线（InterHand ~1.2mm 且扩大、wrist-rel ~3.4mm）→ 主轴移到 whole-body（EHF/UBody/AGORA），InterHand 定位「手 crop 专项、诚实报告非主场」。~~待办 fairbase 4ep~~ **已完成（7-05）**。
-4. **消融叙事升级**：Table 4 三行（rotmat 正/aux 正/L728 负）保留，新增核心问题「**哪个组件买来抗侵蚀**」（假设：aux 2D+热图监督是锚，OSX decoder 无锚故漂）。首推探针 = **posnet 换回 conv `PositionNet`（osx_l 可直接暖启）+ detach off**，一石二鸟：单变量测 7-04 追加①的最大嫌疑簇（DCNv4 冷启/脆弱/detach）+ 归因抗侵蚀来源；topo/occlusion 消融照旧必跑（方法节存在性论证）。**这是主模型定死后唯一剩余实验线，可开跑。**
+4. **消融叙事（探针进展 7-08）**：Table 4 三行（rotmat 正/aux 正/L728 负）+ 核心问题「**哪个组件买来抗侵蚀**」。**Run B（conv posnet + no_detach）已跑前 3ep → 抗侵蚀=aux 锚（锁死）**：Run B 与 fairbase 几乎只差 decoder（都 conv/fresh/梯度回流），Run B 不侵蚀（EHF 15.86~15.95）、fairbase 侵蚀 → 抗侵蚀非 DCNv4 头/非暖启、唯一剩 aux 锚，可写方法节。**剩余两项**：**(i) Run A**（`--hand_posnet dcnv4` fresh，零代码）锁死"InterHand 落后非 posnet"单变量；**(ii) topo/occ 消融**（需改代码加开关，建议 conv+fresh 与 Run B/fairbase 组 decoder 阶梯，**必看 EHF/UBody**——与抗侵蚀归因耦合，砍后若侵蚀则削弱"纯 aux 锚"）。
+   - **decoder 改进线收口（7-08）**：**不再加东西追 InterHand（含加深层数）**——落后是天花板问题非容量问题（冻结骨干=同特征=OSX 天花板 / rotmat 触顶 16.5 / posnet 换 conv 也不动 / 坐标机制正交，refined on/off 评测数字不变=第三证据）；加深还砸「高效单模型」卖点 + 重引 DCNv4 深层 NaN。**decoder 剩余只有消融、无改进。** 「层数 3v6」是条件项（posnet 已无信号 → 除非 topo/occ 出信号否则不跑）。
+   - **能力边界（7-08，回答"能否全面超过 OSX"）**：结构上不可能 → body 冻结=逐比特 OSX 只能平、UBody `[wa]`/`[abs]`=body cam 几何、EHF Face=face 分支，均非 hand decoder 可碰；手部维度 **vs stock 已全超**、**vs 公平基线是 Pareto trade-off 打不破**（ft 占 in-domain 端、我们占 whole-body 端，同特征无法同占前沿两端）。全超需解冻骨干或外挂 WiLoR，都推翻定位。**论文主张固定 =「不破坏 whole-body、不挂外部专家，占据 OSX-ft 换不到的 Pareto 点」，不追全超。**
 5. **正交附带线（T1 已判负 7-06）**：UBody `[wa]` **不可用 T1 补绿**——拆分证明 `[wa]` 杠杆 100% 是 cam_z 投影几何（非 shape），而 cam_z 让 `[wa]↑` 与 `[abs]↓` 刚性耦合、冻结框架无法解耦（cam-only `[wa]` 0.205 反超但 `[abs]` 0.362 崩；shape-only 纯负债）。→ **whole-body 3D 口径本已全绿、不依赖 T1**，`[wa]`/`[abs]` 降为 2D 诊断、诚实标注 gap=body cam 几何；cam/shape 两 run 进 Table 4 归因行。teacher distillation 备选。
 
 ## 常用评估命令（pytorch 路径现在自动带编码器修复）

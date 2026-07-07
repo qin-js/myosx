@@ -183,6 +183,17 @@ class Config:
     # vs fair baseline) and whole-body erosion trace to the DCNv4 cold-start head.
     # train & test must pass the same value (structural mismatch otherwise).
     hand_posnet = 'dcnv4'
+    # Ablation probe (default True = current stack, byte-for-byte unchanged).
+    # HandDecoderLayer's two specialized self-attention sub-layers
+    # (HandTopologyAttention + ImplicitOcclusionModule). When False they are
+    # replaced by ONE plain nn.MultiheadAttention self-attention, giving the
+    # clean "self-attn + deformable + FFN" layer OSX uses — isolates whether the
+    # specialized modules earn their keep (existence justification for the method
+    # section) and, with conv+fresh, forms a decoder-complexity ladder with the
+    # posnet probe (Run B) / fairbase. Must evaluate EHF/UBody: coupled with the
+    # anti-erosion attribution (if removing them erodes, the "pure aux anchor"
+    # story weakens). train & test must pass the same value (structural mismatch).
+    hand_decoder_topo_occ = True
     # Feed the decoder's last-layer REFINED coordinate (xy) to hand_regressor
     # instead of the raw soft-argmax hand_joint_img (z stays soft-argmax — the
     # decoder only regresses 2D). Without this the coord-refiner's learned

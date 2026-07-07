@@ -73,11 +73,11 @@ testset = **HInt（NewDays/VISOR/Ego4D 子集）+ HAA500**；2D PCK 类指标
 | **(f)** | 完整模型（rotmat snapshot_0） | 终值 |
 
 **组件内消融**（各一小表；7-04 起核心问题从"为什么追不上 16.29"升级为"**哪个组件买来抗侵蚀**"——假设：aux 2D+热图监督是抗漂移锚，OSX decoder 无锚故 whole-body 漂移）：
-- **posnet：DCNv4 vs conv PositionNet（osx_l 暖启）± detach**——首推，一石二鸟；
-- **有/无 topo/occlusion 模块**（`my_decoder.py:454-458`，照旧必跑：方法节存在性论证）；
-- decoder 层数 3 vs 6（仅当上两项有信号再跑）；
+- **posnet：DCNv4 vs conv PositionNet（osx_l 暖启）± detach**——**7-08 Run B（conv+no_detach，fresh）已跑前 3ep：抗侵蚀=aux 锚（锁死）**。Run B 与 fairbase 几乎只差 decoder（都 conv/fresh/梯度回流），Run B **不侵蚀**（EHF Hands 15.86~15.95<15.97、UBody 10.05~10.08<10.29）、fairbase 侵蚀 → 抗侵蚀非 DCNv4 头/非暖启，**唯一剩 aux 锚**（可写方法节机制论证）。InterHand 侧 conv 冷启 3ep 仍 16.98（非 posnet 主因，待 **Run A** dcnv4 fresh 锁死单变量）。
+- **有/无 topo/occlusion 模块**（`my_decoder.py` `HandDecoderLayer`，**开关已落地待跑**：`cfg.hand_decoder_topo_occ`，train/test `--no_hand_decoder_topo_occ`；off = 换成一个干净标准 self-attn = OSX 式层，隔离特化模块净贡献）。必跑：方法节存在性论证 + 简化方向 + 堵 reviewer 过度设计质疑；建议 conv+fresh 与 Run B/fairbase 组 decoder 阶梯，**必看 EHF/UBody**——与抗侵蚀归因耦合，砍后若侵蚀则削弱"纯 aux 锚"（则表述收敛为"aux 锚+特化模块"）；
+- decoder 层数 3 vs 6（**条件项**：posnet 已无信号 → 除非 topo/occ 出信号否则不跑；**decoder 改进线 7-08 收口**，落后是天花板非容量，不加深）；
 - 有/无 每层 aux 坐标监督【已有 aux0 数据，⚠️ confound：关 loss 后 bbox_embed 仍无监督迭代参考点，只证"有机制必须配监督"，写表时措辞按"机制内必要性"】；
-- 有/无 迭代参考点（vs 固定 `coord_init`）【已有 gate vs snap2 数据：对 PA≈0、对 2D 为正】。
+- 有/无 迭代参考点（vs 固定 `coord_init`）【已有 gate vs snap2 数据：对 PA≈0、对 2D 为正；7-08 补：refined on/off 评测数字不变 = 坐标机制/3D-PA 正交第三证据】。
 
 **UBody `[wa]` 归因小表（body-side 诊断，非 decoder 消融；7-06 T1 拆分数据）**——回答"自然手 `[wa]` gap 是手 articulation 还是 body 几何"：
 
@@ -127,3 +127,9 @@ testset = **HInt（NewDays/VISOR/Ego4D 子集）+ HAA500**；2D PCK 类指标
 **生死闸已于 7-04 判定：没过（16.53 vs 16.29），按兜底转分析型；但同日 fairbase 三测把兜底上修成 trade-off 方法故事。** 现在唯一每天看的东西换成：**fairbase 侵蚀轨迹（训满 4ep，逐 snapshot 的 InterHand PA vs EHF/UBody Hands）是否坐实"它拿 in-domain 必丢 whole-body"。**
 - 坐实（EHF/UBody 单调或持续劣于我们）→ 新 headline 成立，Table 1/2/3 按 7-04 口径填。
 - 翻案（ft 后续 epoch EHF 回升到 ≤15.6 且 InterHand 继续降）→ 退回纯"高效可复现配方 + 冻结骨干分析"，whole-body 主张降级为"1-epoch 侵蚀现象"。
+
+**7-08 更新：侵蚀轨迹已坐实（未翻案），whole-body headline 成立；抗侵蚀归因也锁死（Run B=aux 锚）。** 论文定位收敛为一句话，**不再动摇**：
+
+> **在冻结骨干、不挂任何外部专家的前提下改善手部——占据一个 OSX-ft 用它的特化税也换不到的 Pareto 点（whole-body 手 > stock 与任意 epoch ft，in-domain 诚实让步 ~1.2mm，held-out 持平）。**
+
+**能力边界（钉死，别再被"能不能全超 OSX"带走）**：结构上不可能全超——body 冻结=逐比特 OSX 只能平、UBody `[wa]`/`[abs]`=body cam 几何、EHF Face=face 分支，均非 hand decoder 可碰；InterHand↔whole-body 是 Pareto trade-off，冻结骨干+同特征下无法同占前沿两端。追全超 = 解冻骨干（另一项目）或外挂 WiLoR（变 H4W++、弃单模型卖点），都推翻定位。**decoder 改进线 7-08 收口：只做消融（解释），不做改进（追指标）——含不加深层数。** 剩余实验 = Run A（归因收尾）+ topo/occ 消融（简化方向）。

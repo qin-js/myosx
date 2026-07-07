@@ -446,14 +446,26 @@ class HandDecoderLayer(nn.Module):
     """
 
     def __init__(self, d_model, nhead, num_joints,
-                 n_levels, n_points, dim_feedforward=1024, dropout=0.1):
+                 n_levels, n_points, dim_feedforward=1024, dropout=0.1,
+                 use_topo_occ=True):
         super().__init__()
+        self.use_topo_occ = use_topo_occ
 
-        # Sub-layer 1: 拓扑自注意力
-        self.topo_attn = HandTopologyAttention(d_model, nhead, num_joints, dropout)
+        if use_topo_occ:
+            # Sub-layer 1: 拓扑自注意力
+            self.topo_attn = HandTopologyAttention(d_model, nhead, num_joints, dropout)
 
-        # Sub-layer 2: 遮挡处理
-        self.occlusion = ImplicitOcclusionModule(d_model, nhead, dropout)
+            # Sub-layer 2: 遮挡处理
+            self.occlusion = ImplicitOcclusionModule(d_model, nhead, dropout)
+        else:
+            # 消融: 用一个干净的标准自注意力替换 topo+occ 两个特化模块,
+            # 得到 OSX 式 "self-attn + deformable + FFN" 干净层, 隔离
+            # "特化模块是否值得" (方法节存在性论证)。
+            self.self_attn = nn.MultiheadAttention(
+                d_model, nhead, dropout=dropout, batch_first=True
+            )
+            self.self_norm = nn.LayerNorm(d_model)
+            self.self_dropout = nn.Dropout(dropout)
 
         # Sub-layer 3: 可变形交叉注意力
         self.cross_attn = MSDeformAttn(d_model, n_levels, nhead, n_points)
@@ -482,11 +494,14 @@ class HandDecoderLayer(nn.Module):
         Returns:
             tgt: (B, J, C)
         """
-        # 1. 拓扑感知自注意力
-        tgt = self.topo_attn(tgt)
-
-        # 2. 遮挡处理
-        tgt = self.occlusion(tgt)
+        # 1. 拓扑感知自注意力 + 遮挡处理 (或消融: 干净标准自注意力)
+        if self.use_topo_occ:
+            tgt = self.topo_attn(tgt)
+            tgt = self.occlusion(tgt)
+        else:
+            tgt2, _ = self.self_attn(tgt, tgt, tgt)
+            tgt = tgt + self.self_dropout(tgt2)
+            tgt = self.self_norm(tgt)
 
         # 3. 可变形交叉注意力
         tgt2 = self.cross_attn(
@@ -598,6 +613,7 @@ class HandDecoder(nn.Module):
         n_points=4,
         num_joints=20,
         feat_channels=256,
+        use_topo_occ=True,
     ):
         """
         Args:
@@ -637,7 +653,8 @@ class HandDecoder(nn.Module):
         self.layers = nn.ModuleList([
             HandDecoderLayer(
                 d_model, nhead, num_joints,
-                n_levels, n_points, dim_feedforward, dropout
+                n_levels, n_points, dim_feedforward, dropout,
+                use_topo_occ=use_topo_occ,
             )
             for _ in range(num_decoder_layers)
         ])

@@ -333,6 +333,10 @@ def parse_args():
     parser.add_argument('--no_detach_hand_decoder_query', action='store_true',
                         help='关闭 detach_hand_decoder_query：让 decoder 梯度回流进 hand_position_net '
                              '特征分支(OSX 有、我们默认 detach 掉)。conv posnet 反向稳定时安全')
+    parser.add_argument('--no_hand_decoder_topo_occ', action='store_true',
+                        help='HandDecoder 消融：去掉 topo/occlusion 两个特化模块，换成一个干净标准自注意力'
+                             '(OSX 式 self-attn+deformable+FFN 层)，做方法节存在性论证。'
+                             'train 与 test 必须一致(结构不同否则加载失败)')
     parser.add_argument('--use_poseur_hand_decoder', action='store_true',
                         help='decoder 隔离实验：手部用 OSX 式 PoseurDecoder(6 层迭代精修) 替代 '
                              'HandDecoder；默认关闭=HandDecoder。train 与 test1 必须一致')
@@ -676,6 +680,10 @@ def main():
     cfg.hand_posnet = args.hand_posnet
     if args.no_detach_hand_decoder_query:
         cfg.detach_hand_decoder_query = False
+    # HandDecoder topo/occ ablation: must be set BEFORE _make_model (get_model reads
+    # cfg.hand_decoder_topo_occ to build HandDecoderLayer sub-modules).
+    if args.no_hand_decoder_topo_occ:
+        cfg.hand_decoder_topo_occ = False
 
     # Route C (gated). Must be set BEFORE _make_model builds the Model, which
     # reads cfg.train_hand_roi to move hand_roi_net into the trainable lists.
